@@ -32,11 +32,13 @@ public let keyName: [Int: String] = [
 public func label(_ keycode: Int) -> String { keyName[keycode] ?? "kc\(keycode)" }
 
 public struct AppCount { public let app: String; public let n: Int }
+public struct ComboCount { public let combo: String; public let n: Int }
 
 // SQLite C API 直叩き(外部依存なし)。デーモンは書き込み、GUI は読み込みに使う。
 public final class Store {
   private var handle: OpaquePointer?
   private var upsert: OpaquePointer?
+  private var comboUpsert: OpaquePointer?
   private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   public init(path: String = Paths.dbPath) {
@@ -59,6 +61,20 @@ public final class Store {
       INSERT INTO counts (hour, keycode, app, n) VALUES (?, ?, ?, 1)
       ON CONFLICT(hour, keycode, app) DO UPDATE SET n = n + 1;
     """, -1, &upsert, nil)
+    // 組み合わせキー(ショートカット)の集計。combo は "⌘C" のような表示ラベル。
+    exec("""
+      CREATE TABLE IF NOT EXISTS combos (
+        hour  INTEGER NOT NULL,
+        combo TEXT    NOT NULL,
+        app   TEXT    NOT NULL,
+        n     INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, combo, app)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO combos (hour, combo, app, n) VALUES (?, ?, ?, 1)
+      ON CONFLICT(hour, combo, app) DO UPDATE SET n = n + 1;
+    """, -1, &comboUpsert, nil)
   }
 
   public func exec(_ sql: String) { sqlite3_exec(handle, sql, nil, nil, nil) }
@@ -70,6 +86,15 @@ public final class Store {
     sqlite3_bind_int64(upsert, 2, sqlite3_int64(keycode))
     sqlite3_bind_text(upsert, 3, app, -1, Store.TRANSIENT)
     sqlite3_step(upsert)
+  }
+
+  public func bumpCombo(hour: Int, combo: String, app: String) {
+    guard let comboUpsert else { return }
+    sqlite3_reset(comboUpsert)
+    sqlite3_bind_int64(comboUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_text(comboUpsert, 2, combo, -1, Store.TRANSIENT)
+    sqlite3_bind_text(comboUpsert, 3, app, -1, Store.TRANSIENT)
+    sqlite3_step(comboUpsert)
   }
 
   private func query(_ sql: String, _ row: (OpaquePointer) -> Void) {
@@ -84,6 +109,15 @@ public final class Store {
   public func total() -> Int {
     var t = 0
     query("SELECT COALESCE(SUM(n),0) FROM counts;") { t = Int(sqlite3_column_int64($0, 0)) }
+    return t
+  }
+
+  /// 指定 hour 以降の合計(今日ぶんの集計に使う)
+  public func total(sinceHour: Int) -> Int {
+    var t = 0
+    query("SELECT COALESCE(SUM(n),0) FROM counts WHERE hour >= \(sinceHour);") {
+      t = Int(sqlite3_column_int64($0, 0))
+    }
     return t
   }
 
@@ -111,6 +145,16 @@ public final class Store {
     var out: [(Int, Int)] = []
     query("SELECT keycode, SUM(n) AS s FROM counts GROUP BY keycode ORDER BY s DESC LIMIT \(limit);") {
       out.append((Int(sqlite3_column_int64($0, 0)), Int(sqlite3_column_int64($0, 1))))
+    }
+    return out
+  }
+
+  /// 組み合わせキー(ショートカット)トップN
+  public func topCombos(_ limit: Int) -> [ComboCount] {
+    var out: [ComboCount] = []
+    query("SELECT combo, SUM(n) AS s FROM combos GROUP BY combo ORDER BY s DESC LIMIT \(limit);") {
+      out.append(ComboCount(combo: String(cString: sqlite3_column_text($0, 0)),
+                            n: Int(sqlite3_column_int64($0, 1))))
     }
     return out
   }

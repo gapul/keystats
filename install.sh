@@ -44,18 +44,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
 
-echo "==> install LaunchAgent -> $PLIST_DST"
+echo "==> install LaunchAgents"
 mkdir -p "$HOME/Library/LaunchAgents"
 sed "s#__HOME__#$HOME#g" "$PLIST_SRC" > "$PLIST_DST"
+# GUI(メニューバー常駐 / ログイン起動 / --background)
+GUI_LABEL="net.gapul.keystats.gui"
+GUI_PLIST_DST="$HOME/Library/LaunchAgents/$GUI_LABEL.plist"
+sed "s#__HOME__#$HOME#g" "net.gapul.keystats.gui.plist" > "$GUI_PLIST_DST"
 
 echo "==> load"
-# 既にロード済みでも失敗しないように(スキップ時は bootout してない)
+# 記録デーモン
 launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" 2>/dev/null || true
 launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# メニューバーGUI(入れ替えのため一旦落として起動)
+launchctl bootout "gui/$(id -u)/$GUI_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$GUI_PLIST_DST" 2>/dev/null || true
 
 cat <<EOF
 

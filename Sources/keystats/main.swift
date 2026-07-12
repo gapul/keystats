@@ -20,6 +20,22 @@ nonisolated(unsafe) var downMods: Set<Int> = []   // 押しっぱなし中の修
   globalStore?.bump(hour: hour, keycode: keycode, app: app)
 }
 
+// ⌘/⌃/⌥/fn のいずれかを伴う打鍵を「組み合わせ」として記録(Shift単独は除外)。
+@inline(__always) func recordComboIfNeeded(_ keycode: Int, _ flags: CGEventFlags) {
+  let shortcutMods: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskSecondaryFn]
+  guard !flags.isDisjoint(with: shortcutMods) else { return }   // ショートカット修飾なし → 通常打鍵
+  var label = ""
+  if flags.contains(.maskSecondaryFn) { label += "fn" }
+  if flags.contains(.maskControl)     { label += "⌃" }
+  if flags.contains(.maskAlternate)   { label += "⌥" }
+  if flags.contains(.maskShift)       { label += "⇧" }
+  if flags.contains(.maskCommand)     { label += "⌘" }
+  label += KeystatsCore.label(keycode)   // 例: ⌘C, ⌘⇧P, ⌃⌥→
+  let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+  let hour = Int(Date().timeIntervalSince1970) / 3600
+  globalStore?.bumpCombo(hour: hour, combo: label, app: app)
+}
+
 func runDaemon() {
   let store = Store()
   globalStore = store
@@ -39,7 +55,9 @@ func runDaemon() {
     case .keyDown:
       // 長押しのオートリピートは1打鍵として扱う(重複除外)
       if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-        recordKey(Int(event.getIntegerValueField(.keyboardEventKeycode)))
+        let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        recordKey(kc)                              // 物理キーとしても数える
+        recordComboIfNeeded(kc, event.flags)       // 修飾付きなら組み合わせも記録
       }
     case .flagsChanged:
       let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
@@ -103,21 +121,31 @@ func showApps() {
   }
 }
 
+func showCombos(limit: Int) {
+  let store = Store()
+  print("組み合わせキー トップ\(limit):")
+  for c in store.topCombos(limit) {
+    print(String(format: "  %8d  %@", c.n, c.combo as NSString))
+  }
+}
+
 // MARK: - entry
 
 let args = CommandLine.arguments
 switch args.count > 1 ? args[1] : "run" {
-case "run":   runDaemon()
-case "top":   showTop(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
-case "apps":  showApps()
-case "where": print(Paths.dbPath)
+case "run":    runDaemon()
+case "top":    showTop(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
+case "apps":   showApps()
+case "combos": showCombos(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
+case "where":  print(Paths.dbPath)
 default:
   print("""
     keystats — 打鍵ヒートマップ収集
-      keystats run     常駐して記録 (デフォルト)
-      keystats top [N] キー別トップN
-      keystats apps    アプリ別打鍵数
-      keystats where   DBパス表示
+      keystats run       常駐して記録 (デフォルト)
+      keystats top [N]   キー別トップN
+      keystats apps      アプリ別打鍵数
+      keystats combos [N] 組み合わせキー(ショートカット)トップN
+      keystats where     DBパス表示
     GUI は keystats-gui (別バイナリ / Keystats.app)
     """)
 }

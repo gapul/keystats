@@ -53,6 +53,7 @@ final class Model: ObservableObject {
   @Published var perKey: [Int: Int] = [:]
   @Published var maxKey = 0
   @Published var apps: [AppCount] = []
+  @Published var combos: [ComboCount] = []
 
   func reload() {
     let store = Store()
@@ -61,6 +62,7 @@ final class Model: ObservableObject {
     perKey = pk
     maxKey = pk.values.max() ?? 0
     apps = store.perApp()
+    combos = store.topCombos(15)
   }
 }
 
@@ -138,6 +140,36 @@ struct AppsBar: View {
   }
 }
 
+struct CombosView: View {
+  let combos: [ComboCount]
+  var body: some View {
+    let maxN = combos.first?.n ?? 1
+    VStack(alignment: .leading, spacing: 6) {
+      Text("組み合わせキー(ショートカット)").font(.headline)
+      if combos.isEmpty {
+        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(.secondary)
+      }
+      ForEach(Array(combos.prefix(12).enumerated()), id: \.offset) { _, c in
+        HStack(spacing: 8) {
+          Text(c.combo)
+            .font(.system(size: 13, weight: .medium, design: .rounded))
+            .frame(width: 92, alignment: .leading).lineLimit(1)
+          GeometryReader { geo in
+            ZStack(alignment: .leading) {
+              RoundedRectangle(cornerRadius: 4).fill(barTrack)
+              RoundedRectangle(cornerRadius: 4)
+                .fill(Color(hue: 0.78, saturation: 0.55, brightness: 0.9))
+                .frame(width: max(2, geo.size.width * CGFloat(c.n) / CGFloat(max(maxN, 1))))
+            }
+          }.frame(height: 16)
+          Text("\(c.n)").font(.system(size: 11, design: .monospaced))
+            .frame(width: 56, alignment: .trailing)
+        }
+      }
+    }
+  }
+}
+
 struct DashboardView: View {
   @StateObject var model = Model()
   @State private var live = true
@@ -164,7 +196,10 @@ struct DashboardView: View {
       }
       Keyboard(perKey: model.perKey, maxKey: model.maxKey)
       Divider()
-      AppsBar(apps: model.apps)
+      HStack(alignment: .top, spacing: 24) {
+        AppsBar(apps: model.apps).frame(maxWidth: .infinity, alignment: .leading)
+        CombosView(combos: model.combos).frame(maxWidth: .infinity, alignment: .leading)
+      }
       Spacer()
     }
     .padding(20)
@@ -174,26 +209,74 @@ struct DashboardView: View {
   }
 }
 
-// MARK: - AppKit bootstrap (bare executable でも前面に出す)
+// MARK: - AppKit bootstrap (メニューバー常駐 + オンデマンドでウィンドウ)
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   var window: NSWindow!
+  var statusItem: NSStatusItem!
+  var statusTimer: Timer?
+
   func applicationDidFinishLaunching(_ n: Notification) {
+    setupStatusItem()
+    setupWindow()
+    updateStatus()
+    // メニューバーの「今日の打鍵数」はウィンドウの開閉に関係なく更新
+    statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.updateStatus() }   // タイマは main ランループで発火
+    }
+    // --background(ログイン起動)ならウィンドウは出さずメニューバーだけ
+    if !CommandLine.arguments.contains("--background") { showWindow() }
+  }
+
+  private func setupStatusItem() {
+    statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    if let b = statusItem.button {
+      let img = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "keystats")
+      img?.isTemplate = true               // メニューバーの明暗に自動追従
+      b.image = img
+      b.imagePosition = .imageLeading
+    }
+    let menu = NSMenu()
+    menu.addItem(withTitle: "ダッシュボードを開く", action: #selector(showWindow), keyEquivalent: "")
+    menu.addItem(.separator())
+    menu.addItem(withTitle: "keystats を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    statusItem.menu = menu
+  }
+
+  private func setupWindow() {
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered, defer: false)
     window.title = "keystats"
     window.center()
+    window.isReleasedWhenClosed = false     // 閉じてもオブジェクトは残す(再表示するため)
     window.contentView = NSHostingView(rootView: DashboardView())
+  }
+
+  @objc func showWindow() {
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
   }
-  func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+  func updateStatus() {
+    let store = Store()
+    // JST の今日の 0 時以降を集計
+    let startHour = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) / 3600
+    statusItem.button?.title = " \(store.total(sinceHour: startHour))"
+  }
+
+  // ウィンドウを閉じてもアプリは終了させない(メニューバーに残す)
+  func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
+  // Dock/再オープン時はウィンドウを出す
+  func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    showWindow(); return true
+  }
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(.accessory)          // Dockアイコンなし = メニューバー常駐
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
