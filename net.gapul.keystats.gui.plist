@@ -15,5 +15,11 @@
   <false/>
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
+  <!-- GUI も同じ DB を読むよう XDG を明示 -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XDG_DATA_HOME</key><string>__DATA__</string>
+    <key>XDG_STATE_HOME</key><string>__STATE__</string>
+  </dict>
 </dict>
 </plist>

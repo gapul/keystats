@@ -6,7 +6,8 @@
   <string>net.gapul.keystats</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__HOME__/.local/bin/keystats</string>
+    <!-- Keystats.app 内から起動 = 入力監視の一覧にアプリのアイコン/名前で出る -->
+    <string>__HOME__/Applications/Keystats.app/Contents/MacOS/keystatsd</string>
     <string>run</string>
   </array>
   <key>RunAtLoad</key>
@@ -15,9 +16,15 @@
   <true/>
   <key>ProcessType</key>
   <string>Background</string>
+  <!-- launchd はシェルの env を継承しないので XDG をここで明示(CLIと参照先を揃える) -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XDG_DATA_HOME</key><string>__DATA__</string>
+    <key>XDG_STATE_HOME</key><string>__STATE__</string>
+  </dict>
   <key>StandardOutPath</key>
-  <string>__HOME__/.local/share/keystats/keystats.log</string>
+  <string>__STATE__/keystats/keystats.log</string>
   <key>StandardErrorPath</key>
-  <string>__HOME__/.local/share/keystats/keystats.log</string>
+  <string>__STATE__/keystats/keystats.log</string>
 </dict>
 </plist>

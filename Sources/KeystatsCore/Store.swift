@@ -5,12 +5,22 @@ import SQLite3
 // デーモン(keystats)と GUI(KeystatsGUI)の両方から使う。
 
 public enum Paths {
-  public static let dataDir: URL = {
-    let base = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".local/share/keystats", isDirectory: true)
-    try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-    return base
-  }()
+  // XDG Base Directory 準拠: 環境変数があれば尊重、無ければ既定(~/.local/...)。
+  private static func xdg(_ env: String, _ fallback: String) -> URL {
+    if let v = ProcessInfo.processInfo.environment[env], !v.isEmpty {
+      return URL(fileURLWithPath: v, isDirectory: true)
+    }
+    return FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(fallback, isDirectory: true)
+  }
+  private static func ensured(_ url: URL) -> URL {
+    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+  /// データ(SQLite): $XDG_DATA_HOME/keystats or ~/.local/share/keystats
+  public static let dataDir: URL = ensured(xdg("XDG_DATA_HOME", ".local/share").appendingPathComponent("keystats", isDirectory: true))
+  /// 状態(ログ): $XDG_STATE_HOME/keystats or ~/.local/state/keystats
+  public static var stateDir: URL { ensured(xdg("XDG_STATE_HOME", ".local/state").appendingPathComponent("keystats", isDirectory: true)) }
   public static var dbPath: String { dataDir.appendingPathComponent("keystats.db").path }
 }
 
@@ -33,6 +43,7 @@ public func label(_ keycode: Int) -> String { keyName[keycode] ?? "kc\(keycode)"
 
 public struct AppCount { public let app: String; public let n: Int }
 public struct ComboCount { public let combo: String; public let n: Int }
+public struct DayCount { public let day: Int; public let n: Int }   // day = ローカル基準の epoch 日数
 
 // SQLite C API 直叩き(外部依存なし)。デーモンは書き込み、GUI は読み込みに使う。
 public final class Store {
@@ -147,6 +158,25 @@ public final class Store {
       out.append((Int(sqlite3_column_int64($0, 0)), Int(sqlite3_column_int64($0, 1))))
     }
     return out
+  }
+
+  /// 時間帯別(ローカル 0..23)の打鍵数。offsetHours はローカルの GMT オフセット(時)。
+  public func hourly(offsetHours off: Int) -> [Int] {
+    var out = Array(repeating: 0, count: 24)
+    query("SELECT ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM counts GROUP BY h;") {
+      let h = Int(sqlite3_column_int64($0, 0))
+      if h >= 0, h < 24 { out[h] = Int(sqlite3_column_int64($0, 1)) }
+    }
+    return out
+  }
+
+  /// 直近 days 日の日別打鍵数(時系列昇順)。day はローカル基準の epoch 日数。
+  public func daily(days: Int, offsetHours off: Int) -> [DayCount] {
+    var out: [DayCount] = []
+    query("SELECT (hour + \(off)) / 24 AS d, SUM(n) FROM counts GROUP BY d ORDER BY d DESC LIMIT \(days);") {
+      out.append(DayCount(day: Int(sqlite3_column_int64($0, 0)), n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out.reversed()
   }
 
   /// 組み合わせキー(ショートカット)トップN

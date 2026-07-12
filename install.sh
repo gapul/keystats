@@ -8,6 +8,12 @@ PLIST_SRC="net.gapul.keystats.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/net.gapul.keystats.plist"
 LABEL="net.gapul.keystats"
 
+# XDG Base Directory(環境変数を尊重、無ければ既定)。launchd に注入して CLI と参照先を揃える。
+XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
+mkdir -p "$XDG_DATA/keystats" "$XDG_STATE/keystats"
+subst() { sed -e "s#__HOME__#$HOME#g" -e "s#__DATA__#$XDG_DATA#g" -e "s#__STATE__#$XDG_STATE#g" "$1"; }
+
 # 署名アイデンティティ(安定した Team に紐づく署名で入力監視の許可が再ビルド後も維持される)。
 # 優先: Developer ID > Apple Development > keystats 自己署名。KEYSTATS_SIGN_ID で上書き可。
 SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null \
@@ -26,17 +32,10 @@ echo "==> codesign ($( [ -n "$SIGN_ID" ] && echo "$SIGN_ID" || echo none ))"
 sign .build/release/keystats    net.gapul.keystats
 sign .build/release/KeystatsGUI net.gapul.keystats.gui
 
-echo "==> install binaries -> ~/.local/bin"
+echo "==> install CLI -> ~/.local/bin"
+# CLI(top/apps/combos)は読み取り専用で入力監視不要。記録デーモンは Keystats.app 内から動かす。
 mkdir -p "$HOME/.local/bin"
-# デーモンは中身が変わった時だけ差し替える。TCC(入力監視)は cdhash に紐づくので、
-# バイナリが同一なら再コピーしない＝アイコン/GUIだけ直した時に権限を巻き添えで失わない。
-if [ -f "$BIN" ] && cmp -s .build/release/keystats "$BIN"; then
-  echo "   keystats(daemon): 変更なし。権限維持のため差し替えスキップ"
-else
-  echo "   keystats(daemon): 差し替え(初回/変更あり → 入力監視の再許可が必要)"
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  cp -f .build/release/keystats "$BIN"
-fi
+cp -f .build/release/keystats    "$BIN"
 cp -f .build/release/KeystatsGUI "$HOME/.local/bin/keystats-gui"
 
 echo "==> build Keystats.app -> ~/Applications"
@@ -44,6 +43,8 @@ APP="$HOME/Applications/Keystats.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -f .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
+# 記録デーモンもバンドル内に置く(入力監視の一覧にアプリのアイコン/名前で出る)
+cp -f .build/release/keystats "$APP/Contents/MacOS/keystatsd"
 # Liquid Glass アイコン: Assets.car(本体) + AppIcon.icns(フォールバック)
 cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 [ -f icon/Assets.car ] && cp -f icon/Assets.car "$APP/Contents/Resources/Assets.car"
@@ -71,14 +72,15 @@ sign "$APP"
 
 echo "==> install LaunchAgents"
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s#__HOME__#$HOME#g" "$PLIST_SRC" > "$PLIST_DST"
+subst "$PLIST_SRC" > "$PLIST_DST"
 # GUI(メニューバー常駐 / ログイン起動 / --background)
 GUI_LABEL="net.gapul.keystats.gui"
 GUI_PLIST_DST="$HOME/Library/LaunchAgents/$GUI_LABEL.plist"
-sed "s#__HOME__#$HOME#g" "net.gapul.keystats.gui.plist" > "$GUI_PLIST_DST"
+subst "net.gapul.keystats.gui.plist" > "$GUI_PLIST_DST"
 
 echo "==> load"
-# 記録デーモン
+# 記録デーモン(バンドル内バイナリを指すので入れ直す。署名が安定なので再許可は不要)
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" 2>/dev/null || true
 launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # メニューバーGUI(入れ替えのため一旦落として起動)
@@ -89,8 +91,8 @@ cat <<EOF
 
 インストール完了。
 初回は「システム設定 > プライバシーとセキュリティ > 入力監視」に
-  $BIN
-が現れるので、トグルをオンにしてください。オンにしたら:
+  Keystats
+がアプリのアイコンで現れるので、トグルをオンにしてください。オンにしたら:
 
   launchctl kickstart -k gui/$(id -u)/$LABEL
 

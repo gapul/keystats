@@ -21,52 +21,134 @@ let layout: [[KeyDef]] = [
    KeyDef(kc: 123, w: 1), KeyDef(kc: 125, w: 1), KeyDef(kc: 126, w: 1), KeyDef(kc: 124, w: 1)],
 ]
 
-// MARK: - ヒートマップ配色
+// MARK: - テーマ (Zenn 風: 白基調 + #3EA8FF アクセント + 角丸カード)
+
+extension Color {
+  init(hex: UInt32) {
+    self.init(.sRGB, red: Double((hex >> 16) & 0xff) / 255,
+              green: Double((hex >> 8) & 0xff) / 255,
+              blue: Double(hex & 0xff) / 255, opacity: 1)
+  }
+  static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+    Color(nsColor: NSColor(name: nil) { ap in
+      let isDark = ap.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+      let hex = isDark ? dark : light
+      return NSColor(srgbRed: CGFloat((hex >> 16) & 0xff) / 255,
+                     green: CGFloat((hex >> 8) & 0xff) / 255,
+                     blue: CGFloat(hex & 0xff) / 255, alpha: 1)
+    })
+  }
+}
+
+enum Theme {
+  static let accent = Color(hex: 0x3EA8FF)          // Zenn ブルー
+  static let accent2 = Color(hex: 0x8B5CF6)         // 補助(組み合わせ)
+  static let bg     = Color.dyn(0xF3F5F8, 0x0F1115)
+  static let card   = Color.dyn(0xFFFFFF, 0x1A1D23)
+  static let border = Color.dyn(0xE6E9EE, 0x2A2F37)
+  static let sub    = Color.dyn(0x6B7280, 0x8A93A0)
+}
+
+let emptyKey = Color.dyn(0xEDEFF3, 0x252A31)
+let barTrack = Color.dyn(0xEDEFF3, 0x22262D)
 
 func heatColor(_ n: Int, max: Int) -> Color {
   guard n > 0, max > 0 else { return emptyKey }
   let t = pow(Double(n) / Double(max), 0.5)          // 平方根で寄りを緩和
   let hue = (1 - t) * 0.62                            // 青(0.62) → 赤(0)
-  return Color(hue: hue, saturation: 0.85, brightness: 0.95)
+  return Color(hue: hue, saturation: 0.82, brightness: 0.96)
 }
-
-// ライト/ダーク追従のグレー(打鍵ゼロのキー・棒グラフの下地)
-extension Color {
-  static func adaptiveGray(light: Double, dark: Double) -> Color {
-    Color(nsColor: NSColor(name: nil) { ap in
-      let isDark = ap.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-      return NSColor(white: isDark ? dark : light, alpha: 1)
-    })
-  }
-}
-let emptyKey = Color.adaptiveGray(light: 0.90, dark: 0.20)
-let barTrack = Color.adaptiveGray(light: 0.88, dark: 0.26)
 
 func shortApp(_ bundle: String) -> String {
   bundle.split(separator: ".").last.map(String.init) ?? bundle
 }
 
-// MARK: - データ
+func dayLabel(_ day: Int) -> String {          // day = ローカル epoch 日数 → "M/d"
+  let secs = Double(day) * 86400 - Double(TimeZone.current.secondsFromGMT())
+  let d = Date(timeIntervalSince1970: secs)
+  let f = DateFormatter(); f.dateFormat = "M/d"
+  return f.string(from: d)
+}
 
-final class Model: ObservableObject {
-  @Published var total = 0
-  @Published var perKey: [Int: Int] = [:]
-  @Published var maxKey = 0
-  @Published var apps: [AppCount] = []
-  @Published var combos: [ComboCount] = []
+// MARK: - 共通パーツ
 
-  func reload() {
-    let store = Store()
-    let pk = store.perKey()
-    total = store.total()
-    perKey = pk
-    maxKey = pk.values.max() ?? 0
-    apps = store.perApp()
-    combos = store.topCombos(15)
+struct Card<Content: View>: View {
+  var title: String? = nil
+  var icon: String? = nil
+  @ViewBuilder var content: () -> Content
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if let title {
+        HStack(spacing: 6) {
+          if let icon {
+            Image(systemName: icon).foregroundStyle(Theme.accent)
+              .font(.system(size: 12, weight: .semibold))
+          }
+          Text(title).font(.system(size: 13, weight: .semibold))
+          Spacer()
+        }
+      }
+      content()
+    }
+    .padding(16)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Theme.card)
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
   }
 }
 
-// MARK: - View
+struct StatCard: View {
+  let label: String; let value: String; var sub: String? = nil; var accent = false
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.sub)
+      Text(value).font(.system(size: 27, weight: .bold, design: .rounded))
+        .foregroundStyle(accent ? Theme.accent : Color.primary).lineLimit(1).minimumScaleFactor(0.6)
+      if let sub { Text(sub).font(.system(size: 11)).foregroundStyle(Theme.sub).lineLimit(1) }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(14)
+    .background(Theme.card)
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+  }
+}
+
+// 横棒ランキング(アプリ/組み合わせ/キー 共通)
+struct BarList: View {
+  let rows: [(label: String, n: Int)]
+  var color: Color
+  var labelWidth: CGFloat = 116
+  var rounded = false
+  var body: some View {
+    let maxN = max(rows.first?.n ?? 1, 1)
+    VStack(spacing: 7) {
+      if rows.isEmpty {
+        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(Theme.sub)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+        HStack(spacing: 10) {
+          Text(r.label)
+            .font(.system(size: 12, weight: rounded ? .semibold : .regular, design: rounded ? .rounded : .default))
+            .frame(width: labelWidth, alignment: .leading).lineLimit(1)
+          GeometryReader { geo in
+            ZStack(alignment: .leading) {
+              Capsule().fill(barTrack)
+              Capsule().fill(color)
+                .frame(width: max(3, geo.size.width * CGFloat(r.n) / CGFloat(maxN)))
+            }
+          }.frame(height: 13)
+          Text("\(r.n)").font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(Theme.sub).frame(width: 56, alignment: .trailing)
+        }
+      }
+    }
+  }
+}
+
+// MARK: - キーボード
 
 struct KeyCap: View {
   let def: KeyDef
@@ -74,26 +156,21 @@ struct KeyCap: View {
   let maxKey: Int
   static let unit: CGFloat = 46
   static let h: CGFloat = 42
-
   var body: some View {
     let w = Self.unit * def.w
     VStack(spacing: 1) {
-      Text(label(def.kc))
-        .font(.system(size: 11, weight: .medium))
-        .lineLimit(1)
-      Text(n > 0 ? "\(n)" : "")
-        .font(.system(size: 9))
-        .opacity(0.85)
+      Text(label(def.kc)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+      Text(n > 0 ? "\(n)" : "").font(.system(size: 9)).opacity(0.85)
     }
     .frame(width: w, height: Self.h)
     .background(heatColor(n, max: maxKey))
     .foregroundStyle(keyFg)
-    .clipShape(RoundedRectangle(cornerRadius: 6))
+    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+      .strokeBorder(Theme.border.opacity(n > 0 ? 0 : 1), lineWidth: 1))
   }
-
-  // 打鍵ゼロ→システム標準文字色(ライト/ダーク追従)、色付き→濃淡で黒白
   private var keyFg: Color {
-    guard n > 0 else { return .primary }
+    guard n > 0 else { return Theme.sub }
     return Double(n) / Double(max(maxKey, 1)) > 0.28 ? .black : .white
   }
 }
@@ -114,98 +191,160 @@ struct Keyboard: View {
   }
 }
 
-struct AppsBar: View {
-  let apps: [AppCount]
+// MARK: - 分析チャート
+
+struct HourlyChart: View {          // 時間帯別(0..23, ローカル)
+  let hourly: [Int]
+  let peak: Int
   var body: some View {
-    let maxN = apps.first?.n ?? 1
-    VStack(alignment: .leading, spacing: 6) {
-      Text("アプリ別打鍵数").font(.headline)
-      ForEach(Array(apps.prefix(12).enumerated()), id: \.offset) { _, a in
-        HStack(spacing: 8) {
-          Text(shortApp(a.app))
-            .font(.system(size: 12)).frame(width: 130, alignment: .leading).lineLimit(1)
-          GeometryReader { geo in
-            ZStack(alignment: .leading) {
-              RoundedRectangle(cornerRadius: 4).fill(barTrack)
-              RoundedRectangle(cornerRadius: 4)
-                .fill(Color(hue: 0.58, saturation: 0.7, brightness: 0.9))
-                .frame(width: max(2, geo.size.width * CGFloat(a.n) / CGFloat(max(maxN, 1))))
-            }
-          }.frame(height: 16)
-          Text("\(a.n)").font(.system(size: 11, design: .monospaced))
-            .frame(width: 64, alignment: .trailing)
+    let maxN = max(hourly.max() ?? 1, 1)
+    VStack(spacing: 6) {
+      HStack(alignment: .bottom, spacing: 3) {
+        ForEach(0..<24, id: \.self) { h in
+          RoundedRectangle(cornerRadius: 3)
+            .fill(h == peak ? Theme.accent : Theme.accent.opacity(0.30))
+            .frame(maxWidth: .infinity)
+            .frame(height: max(2, CGFloat(hourly[h]) / CGFloat(maxN) * 110))
+        }
+      }.frame(height: 110)
+      HStack(spacing: 3) {
+        ForEach(0..<24, id: \.self) { h in
+          Text(h % 6 == 0 ? "\(h)" : "").font(.system(size: 8))
+            .foregroundStyle(Theme.sub).frame(maxWidth: .infinity)
         }
       }
     }
   }
 }
 
-struct CombosView: View {
-  let combos: [ComboCount]
+struct DailyTrend: View {           // 日別トレンド(直近)
+  let daily: [DayCount]
   var body: some View {
-    let maxN = combos.first?.n ?? 1
-    VStack(alignment: .leading, spacing: 6) {
-      Text("組み合わせキー(ショートカット)").font(.headline)
-      if combos.isEmpty {
-        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(.secondary)
+    let maxN = max(daily.map { $0.n }.max() ?? 1, 1)
+    HStack(alignment: .bottom, spacing: 5) {
+      if daily.isEmpty {
+        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(Theme.sub)
       }
-      ForEach(Array(combos.prefix(12).enumerated()), id: \.offset) { _, c in
-        HStack(spacing: 8) {
-          Text(c.combo)
-            .font(.system(size: 13, weight: .medium, design: .rounded))
-            .frame(width: 92, alignment: .leading).lineLimit(1)
-          GeometryReader { geo in
-            ZStack(alignment: .leading) {
-              RoundedRectangle(cornerRadius: 4).fill(barTrack)
-              RoundedRectangle(cornerRadius: 4)
-                .fill(Color(hue: 0.78, saturation: 0.55, brightness: 0.9))
-                .frame(width: max(2, geo.size.width * CGFloat(c.n) / CGFloat(max(maxN, 1))))
-            }
-          }.frame(height: 16)
-          Text("\(c.n)").font(.system(size: 11, design: .monospaced))
-            .frame(width: 56, alignment: .trailing)
-        }
+      ForEach(Array(daily.enumerated()), id: \.offset) { i, d in
+        VStack(spacing: 4) {
+          Text("\(d.n)").font(.system(size: 8)).foregroundStyle(Theme.sub)
+            .opacity(i == daily.count - 1 ? 1 : 0)     // 最新だけ数値表示
+          RoundedRectangle(cornerRadius: 3)
+            .fill(i == daily.count - 1 ? Theme.accent : Theme.accent.opacity(0.55))
+            .frame(height: max(2, CGFloat(d.n) / CGFloat(maxN) * 110))
+          Text(dayLabel(d.day)).font(.system(size: 8)).foregroundStyle(Theme.sub)
+        }.frame(maxWidth: .infinity)
       }
-    }
+    }.frame(height: 150)
   }
 }
+
+// MARK: - データ
+
+final class Model: ObservableObject {
+  @Published var total = 0
+  @Published var today = 0
+  @Published var perKey: [Int: Int] = [:]
+  @Published var maxKey = 0
+  @Published var apps: [AppCount] = []
+  @Published var combos: [ComboCount] = []
+  @Published var hourly: [Int] = Array(repeating: 0, count: 24)
+  @Published var daily: [DayCount] = []
+  @Published var topKeys: [(Int, Int)] = []
+
+  func reload() {
+    let s = Store()
+    let off = TimeZone.current.secondsFromGMT() / 3600
+    let pk = s.perKey()
+    total = s.total()
+    let startHour = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) / 3600
+    today = s.total(sinceHour: startHour)
+    perKey = pk
+    maxKey = pk.values.max() ?? 0
+    apps = s.perApp()
+    combos = s.topCombos(12)
+    hourly = s.hourly(offsetHours: off)
+    daily = s.daily(days: 14, offsetHours: off)
+    topKeys = s.topKeys(12)
+  }
+
+  var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
+  var topAppName: String { apps.first.map { shortApp($0.app) } ?? "—" }
+  var distinctKeys: Int { perKey.values.filter { $0 > 0 }.count }
+}
+
+// MARK: - ダッシュボード
 
 struct DashboardView: View {
   @StateObject var model = Model()
   @State private var live = true
-  // 1.5秒ごとにDBを読み直してリアルタイム表示
   private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack(spacing: 12) {
-        Text("keystats").font(.system(size: 20, weight: .bold))
-        Spacer()
-        Text("総打鍵数 \(model.total)").font(.system(size: 14, design: .monospaced)).opacity(0.8)
-        // ライブ状態のトグル(緑=自動更新中)
-        Button {
-          live.toggle(); if live { model.reload() }
-        } label: {
-          HStack(spacing: 5) {
-            Circle().fill(live ? Color.green : Color.secondary).frame(width: 8, height: 8)
-            Text(live ? "ライブ" : "停止中").font(.system(size: 12))
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        header
+        // 統計カード
+        HStack(spacing: 12) {
+          StatCard(label: "総打鍵数", value: model.total.formatted(), accent: true)
+          StatCard(label: "今日", value: model.today.formatted(),
+                   sub: model.total > 0 ? "全体の\(pct(model.today, model.total))" : nil)
+          StatCard(label: "ピーク時間帯", value: "\(model.peakHour)時",
+                   sub: "\(model.hourly[model.peakHour].formatted()) 打鍵")
+          StatCard(label: "よく使うアプリ", value: model.topAppName,
+                   sub: "\(model.distinctKeys) 種のキー")
+        }
+        Card(title: "キーボードヒートマップ", icon: "keyboard") {
+          Keyboard(perKey: model.perKey, maxKey: model.maxKey)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        HStack(alignment: .top, spacing: 16) {
+          Card(title: "時間帯別", icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
+          Card(title: "日別トレンド(14日)", icon: "chart.bar") { DailyTrend(daily: model.daily) }
+        }
+        HStack(alignment: .top, spacing: 16) {
+          Card(title: "よく押すキー", icon: "trophy") {
+            BarList(rows: model.topKeys.map { (label($0.0), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true)
+          }
+          Card(title: "組み合わせキー", icon: "command") {
+            BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
           }
         }
-        .buttonStyle(.bordered)
-        Button("更新") { model.reload() }.keyboardShortcut("r")
+        Card(title: "アプリ別打鍵数", icon: "app.badge") {
+          BarList(rows: model.apps.prefix(14).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150)
+        }
       }
-      Keyboard(perKey: model.perKey, maxKey: model.maxKey)
-      Divider()
-      HStack(alignment: .top, spacing: 24) {
-        AppsBar(apps: model.apps).frame(maxWidth: .infinity, alignment: .leading)
-        CombosView(combos: model.combos).frame(maxWidth: .infinity, alignment: .leading)
-      }
-      Spacer()
+      .padding(20)
     }
-    .padding(20)
-    .frame(minWidth: 760, minHeight: 560)
+    .background(Theme.bg)
+    .frame(minWidth: 900, minHeight: 720)
     .onAppear { model.reload() }
     .onReceive(timer) { _ in if live { model.reload() } }
+  }
+
+  private var header: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "keyboard.fill").foregroundStyle(Theme.accent).font(.system(size: 20))
+      VStack(alignment: .leading, spacing: 1) {
+        Text("keystats").font(.system(size: 22, weight: .bold))
+        Text("打鍵アナリティクス").font(.system(size: 11)).foregroundStyle(Theme.sub)
+      }
+      Spacer()
+      Button {
+        live.toggle(); if live { model.reload() }
+      } label: {
+        HStack(spacing: 5) {
+          Circle().fill(live ? Color.green : Theme.sub).frame(width: 7, height: 7)
+          Text(live ? "ライブ" : "停止中").font(.system(size: 12, weight: .medium))
+        }
+      }.buttonStyle(.bordered)
+      Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
+        .keyboardShortcut("r")
+    }
+  }
+
+  private func pct(_ a: Int, _ b: Int) -> String {
+    b > 0 ? String(format: "%.0f%%", Double(a) / Double(b) * 100) : "0%"
   }
 }
 
