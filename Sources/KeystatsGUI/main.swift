@@ -363,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     updateStatus()
     // メニューバーの「今日の打鍵数」はウィンドウの開閉に関係なく更新
     statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.updateStatus() }   // タイマは main ランループで発火
+      Task { @MainActor in self?.updateStatus() }          // macOS 13 でも動く形(assumeIsolatedは14+)
     }
     // --background(ログイン起動)ならウィンドウは出さずメニューバーだけ
     if !CommandLine.arguments.contains("--background") { showWindow() }

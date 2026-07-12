@@ -38,12 +38,27 @@ cat > "$ICON/icon.json" <<'JSON'
 }
 JSON
 
-# 3) actool でコンパイル -> AppIcon.icns + Assets.car
+# 3) actool でコンパイル -> Assets.car(Liquid Glass 本体、macOS 26+ 用)
 rm -rf "$W/out"; mkdir -p "$W/out"
 xcrun actool "$ICON" --compile "$W/out" --platform macosx \
   --minimum-deployment-target 26.0 --app-icon AppIcon \
   --output-partial-info-plist "$W/out/partial.plist" >/dev/null 2>&1
-cp -f "$W/out/AppIcon.icns" AppIcon.icns
-cp -f "$W/out/Assets.car"  Assets.car
-# 旧レンダラ向けの大きいプレビュー(ライト背景 squircle)も一応残す
-echo "生成: $(pwd)/AppIcon.icns, Assets.car (+ AppIcon.icon ソース)"
+cp -f "$W/out/Assets.car" Assets.car
+
+# 4) 従来 .icns (macOS 26 未満のフォールバック)。actool の icns は 256px までしか無く
+#    大表示で粗くなる/仮アイコン化するため、ライト角丸+キーキャップから 16〜1024 のフル icns を自作。
+magick -size 1024x1024 xc:none -fill white \
+  -draw "roundrectangle 96,96 928,928 185,185" "$W/mask.png"
+magick -size 1024x1024 gradient:'#ffffff'-'#e6ebf2' "$W/grad.png"
+magick "$W/grad.png" "$W/mask.png" -alpha off -compose CopyOpacity -composite "$W/bg.png"
+magick \( "$W/art.png" -resize 680x680 \) \
+  \( +clone -background black -shadow 45x16+0+12 \) \
+  +swap -background none -layers merge +repage "$W/cap.png"
+magick "$W/bg.png" "$W/cap.png" -gravity center -composite AppIcon-1024.png
+ICONSET="$W/AppIcon.iconset"; mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+  sips -z $s $s        AppIcon-1024.png --out "$ICONSET/icon_${s}x${s}.png"      >/dev/null 2>&1
+  sips -z $((s*2)) $((s*2)) AppIcon-1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1
+done
+iconutil -c icns "$ICONSET" -o AppIcon.icns
+echo "生成: $(pwd)/AppIcon.icns(フル解像度), Assets.car, AppIcon-1024.png (+ AppIcon.icon ソース)"
