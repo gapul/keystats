@@ -5,10 +5,22 @@ let package = Package(
   name: "keystats",
   platforms: [.macOS(.v13)],
   targets: [
+    // 共有コア: パス / keycode ラベル / SQLite 読み書き
+    .target(
+      name: "KeystatsCore",
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
+    // 記録デーモン + CLI
     .executableTarget(
       name: "keystats",
-      // macOS 標準の sqlite3 をリンク（外部依存なし）
+      dependencies: ["KeystatsCore"],
       linkerSettings: [.linkedLibrary("sqlite3")]
-    )
+    ),
+    // SwiftUI ダッシュボード
+    .executableTarget(
+      name: "KeystatsGUI",
+      dependencies: ["KeystatsCore"],
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
   ]
 )

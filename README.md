@@ -38,6 +38,15 @@ keystats where    # DBパス
 keystats run      # 手動で常駐(通常は launchd 経由)
 ```
 
+### GUI
+
+`~/Applications/Keystats.app`(ダブルクリック)または `keystats-gui`。
+キーボード配列のヒートマップ(打鍵数で色付け)＋アプリ別打鍵数の棒グラフを表示。
+**読み取り専用なので入力監視の権限は不要。** デーモンが書いた SQLite を読むだけ。
+`更新`(⌘R)で再読み込み。
+
+### 生SQL
+
 集約は素の SQL なので、時間帯別やアプリ×キーのクロス集計も直接叩ける:
 
 ```sh
@@ -54,6 +63,9 @@ rm ~/Library/LaunchAgents/net.gapul.keystats.plist ~/.local/bin/keystats
 
 ## TODO / 拡張案
 
-- キーボードのヒートマップ SVG 出力(keycode→物理配列)
-- アプリ「稼働時間」の記録(前面アプリを定期ポーリング)
+- 期間フィルタ(今日/今週/全期間)を GUI に追加
+- アプリ「稼働時間」の記録(前面アプリを定期ポーリング)。今は打鍵数ベース
+- 時間帯ヒートマップ(hour%24 × 曜日)を GUI に追加
+- 内蔵キーボード vs Keyball の分離(kCGKeyboardEventKeyboardType / IOKit)
 - Keyball(QMK)側のレイヤー/コンボ込みヒートマップと突き合わせ
+- .app のコード署名を安定化して再ビルドでの権限外れを回避
