@@ -21,8 +21,11 @@ cp -f .build/release/KeystatsGUI "$HOME/.local/bin/keystats-gui"
 echo "==> build Keystats.app -> ~/Applications"
 APP="$HOME/Applications/Keystats.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -f .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
+# Liquid Glass アイコン: Assets.car(本体) + AppIcon.icns(フォールバック)
+cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+[ -f icon/Assets.car ] && cp -f icon/Assets.car "$APP/Contents/Resources/Assets.car"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,6 +33,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Keystats</string>
   <key>CFBundleIdentifier</key><string>net.gapul.keystats.gui</string>
   <key>CFBundleExecutable</key><string>KeystatsGUI</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>NSHighResolutionCapable</key><true/>

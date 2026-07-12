@@ -23,11 +23,23 @@ let layout: [[KeyDef]] = [
 // MARK: - ヒートマップ配色
 
 func heatColor(_ n: Int, max: Int) -> Color {
-  guard n > 0, max > 0 else { return Color(white: 0.22) }
+  guard n > 0, max > 0 else { return emptyKey }
   let t = pow(Double(n) / Double(max), 0.5)          // 平方根で寄りを緩和
   let hue = (1 - t) * 0.62                            // 青(0.62) → 赤(0)
   return Color(hue: hue, saturation: 0.85, brightness: 0.95)
 }
+
+// ライト/ダーク追従のグレー(打鍵ゼロのキー・棒グラフの下地)
+extension Color {
+  static func adaptiveGray(light: Double, dark: Double) -> Color {
+    Color(nsColor: NSColor(name: nil) { ap in
+      let isDark = ap.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+      return NSColor(white: isDark ? dark : light, alpha: 1)
+    })
+  }
+}
+let emptyKey = Color.adaptiveGray(light: 0.90, dark: 0.20)
+let barTrack = Color.adaptiveGray(light: 0.88, dark: 0.26)
 
 func shortApp(_ bundle: String) -> String {
   bundle.split(separator: ".").last.map(String.init) ?? bundle
@@ -72,8 +84,14 @@ struct KeyCap: View {
     }
     .frame(width: w, height: Self.h)
     .background(heatColor(n, max: maxKey))
-    .foregroundStyle(n > 0 && Double(n) / Double(max(maxKey, 1)) > 0.28 ? .black : .white)
+    .foregroundStyle(keyFg)
     .clipShape(RoundedRectangle(cornerRadius: 6))
+  }
+
+  // 打鍵ゼロ→システム標準文字色(ライト/ダーク追従)、色付き→濃淡で黒白
+  private var keyFg: Color {
+    guard n > 0 else { return .primary }
+    return Double(n) / Double(max(maxKey, 1)) > 0.28 ? .black : .white
   }
 }
 
@@ -105,7 +123,7 @@ struct AppsBar: View {
             .font(.system(size: 12)).frame(width: 130, alignment: .leading).lineLimit(1)
           GeometryReader { geo in
             ZStack(alignment: .leading) {
-              RoundedRectangle(cornerRadius: 4).fill(Color(white: 0.25))
+              RoundedRectangle(cornerRadius: 4).fill(barTrack)
               RoundedRectangle(cornerRadius: 4)
                 .fill(Color(hue: 0.58, saturation: 0.7, brightness: 0.9))
                 .frame(width: max(2, geo.size.width * CGFloat(a.n) / CGFloat(max(maxN, 1))))
