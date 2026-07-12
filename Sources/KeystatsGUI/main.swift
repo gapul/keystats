@@ -170,8 +170,8 @@ struct KeyCap: View {
       .strokeBorder(Theme.border.opacity(n > 0 ? 0 : 1), lineWidth: 1))
   }
   private var keyFg: Color {
-    guard n > 0 else { return Theme.sub }
-    return Double(n) / Double(max(maxKey, 1)) > 0.28 ? .black : .white
+    // 色付きセルは常に黒文字(明るいヒート色なので黒が読みやすい)。ゼロは控えめグレー。
+    n > 0 ? .black : Theme.sub
   }
 }
 
