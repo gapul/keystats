@@ -357,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var statusTimer: Timer?
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    bootstrapAgents()          // 自分のバンドル位置から LaunchAgent を自己登録
     setupStatusItem()
     setupWindow()
     updateStatus()
@@ -382,6 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let menu = NSMenu()
     menu.addItem(withTitle: "ダッシュボードを開く", action: #selector(showWindow), keyEquivalent: "")
     menu.addItem(withTitle: "アップデートを確認", action: #selector(checkUpdate), keyEquivalent: "")
+    let auto = NSMenuItem(title: "自動アップデート", action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
+    auto.state = autoUpdateEnabled ? .on : .off
+    menu.addItem(auto)
     menu.addItem(.separator())
     menu.addItem(withTitle: "keystats を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     statusItem.menu = menu
@@ -424,10 +428,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       a.informativeText = out.isEmpty ? "最新版に更新できます。" : out
       a.addButton(withTitle: "今すぐ更新"); a.addButton(withTitle: "あとで")
       if a.runModal() == .alertFirstButtonReturn {
-        // launchd 経由で更新(GUIが再起動されても完走する)
-        let k = Process(); k.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        k.arguments = ["kickstart", "-k", "gui/\(getuid())/net.gapul.keystats.update"]
-        try? k.run()
+        // launchd 経由で更新(GUIが再起動されても完走する)。無効化中でも一時的にロードして実行。
+        let uid = getuid()
+        if !agentLoaded("net.gapul.keystats.update") {
+          let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.update.plist")
+          launchctl(["bootstrap", "gui/\(uid)", url.path])
+        }
+        launchctl(["kickstart", "-k", "gui/\(uid)/net.gapul.keystats.update"])
         alert("アップデート中", "バックグラウンドで更新します。完了すると通知が出ます。")
       }
     } else {
@@ -438,6 +446,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func alert(_ title: String, _ body: String) {
     let a = NSAlert(); a.messageText = title; a.informativeText = body
     a.addButton(withTitle: "OK"); a.runModal()
+  }
+
+  // MARK: 設定(UserDefaults)
+
+  var autoUpdateEnabled: Bool {
+    get { UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true }
+    set { UserDefaults.standard.set(newValue, forKey: "autoUpdate") }
+  }
+
+  @objc func toggleAutoUpdate(_ sender: NSMenuItem) {
+    autoUpdateEnabled.toggle()
+    sender.state = autoUpdateEnabled ? .on : .off
+    let url = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.update.plist")
+    applyAutoUpdate(autoUpdateEnabled, updateURL: url)
+  }
+
+  // MARK: LaunchAgent 自己登録(brew 等でアプリを置くだけでも動く / パスは設置先に自動追従)
+
+  @discardableResult
+  private func launchctl(_ args: [String]) -> Int32 {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = args
+    do { try p.run(); p.waitUntilExit(); return p.terminationStatus } catch { return -1 }
+  }
+  private func agentLoaded(_ label: String) -> Bool { launchctl(["print", "gui/\(getuid())/\(label)"]) == 0 }
+
+  private func applyAutoUpdate(_ enabled: Bool, updateURL: URL) {
+    let uid = getuid()
+    if enabled {
+      if !agentLoaded("net.gapul.keystats.update") { launchctl(["bootstrap", "gui/\(uid)", updateURL.path]) }
+    } else {
+      launchctl(["bootout", "gui/\(uid)/net.gapul.keystats.update"])
+    }
+  }
+
+  private func bootstrapAgents() {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    let laDir = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+    try? fm.createDirectory(at: laDir, withIntermediateDirectories: true)
+    let app = Bundle.main.bundlePath
+    let env = ProcessInfo.processInfo.environment
+    func nz(_ s: String?) -> String? { (s?.isEmpty == false) ? s : nil }
+    let dataHome  = nz(env["XDG_DATA_HOME"])  ?? home.appendingPathComponent(".local/share").path
+    let stateHome = nz(env["XDG_STATE_HOME"]) ?? home.appendingPathComponent(".local/state").path
+    try? fm.createDirectory(atPath: "\(dataHome)/keystats", withIntermediateDirectories: true)
+    try? fm.createDirectory(atPath: "\(stateHome)/keystats", withIntermediateDirectories: true)
+    let uid = getuid()
+
+    func esc(_ s: String) -> String {
+      s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+    }
+    let xdg = "<key>EnvironmentVariables</key><dict>"
+      + "<key>XDG_DATA_HOME</key><string>\(esc(dataHome))</string>"
+      + "<key>XDG_STATE_HOME</key><string>\(esc(stateHome))</string></dict>"
+    @discardableResult
+    func write(_ label: String, _ inner: String) -> URL {
+      let url = laDir.appendingPathComponent("\(label).plist")
+      let s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        + "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        + "<plist version=\"1.0\"><dict><key>Label</key><string>\(label)</string>\(inner)</dict></plist>\n"
+      try? s.write(to: url, atomically: true, encoding: .utf8)
+      return url
+    }
+
+    let dLog = "\(stateHome)/keystats/keystats.log"
+    let dURL = write("net.gapul.keystats",
+      "<key>ProgramArguments</key><array><string>\(esc(app))/Contents/MacOS/keystatsd</string><string>run</string></array>"
+      + "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ProcessType</key><string>Background</string>"
+      + xdg
+      + "<key>StandardOutPath</key><string>\(esc(dLog))</string><key>StandardErrorPath</key><string>\(esc(dLog))</string>")
+    write("net.gapul.keystats.gui",   // ログイン自動起動用。走っている自分は触らない
+      "<key>ProgramArguments</key><array><string>\(esc(app))/Contents/MacOS/KeystatsGUI</string><string>--background</string></array>"
+      + "<key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>LimitLoadToSessionType</key><string>Aqua</string>"
+      + xdg)
+    let uLog = "\(stateHome)/keystats/update.log"
+    let uURL = write("net.gapul.keystats.update",
+      "<key>ProgramArguments</key><array><string>\(esc(app))/Contents/Resources/keystats-update</string></array>"
+      + "<key>RunAtLoad</key><true/><key>StartInterval</key><integer>86400</integer>"
+      + "<key>StandardOutPath</key><string>\(esc(uLog))</string><key>StandardErrorPath</key><string>\(esc(uLog))</string>")
+
+    // 記録デーモンは未ロードなら起動(記録を止めないよう、既にロード済みなら触らない)
+    if !agentLoaded("net.gapul.keystats") { launchctl(["bootstrap", "gui/\(uid)", dURL.path]) }
+    // 自動アップデートは設定に従う
+    applyAutoUpdate(autoUpdateEnabled, updateURL: uURL)
+
+    // 初回のみ入力監視パネルを開いて許可を促す
+    if !UserDefaults.standard.bool(forKey: "onboarded") {
+      UserDefaults.standard.set(true, forKey: "onboarded")
+      if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+        NSWorkspace.shared.open(u)
+      }
+    }
   }
 
   func updateStatus() {

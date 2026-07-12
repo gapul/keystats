@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# keystats 自己アップデータ。GitHub Releases の最新版を見て、新しければ DL して差し替える。
-# 依存なし(curl / plutil / ditto は macOS 標準)。定期実行(LaunchAgent) と手動の両対応。
+# keystats 自己アップデータ。GitHub Releases の最新版を見て、新しければ
+# 「今この keystats-update が入っているアプリ自身」をその場で差し替える。
+# 設置先(/Applications でも ~/Applications でも)に追従。依存なし(curl/plutil/ditto)。
 #   keystats-update            … 新しければ更新
-#   keystats-update --check    … 確認だけ(更新しない)。stdout に状態を出す
+#   keystats-update --check    … 確認だけ(exit 10 = 更新あり)
 set -euo pipefail
 
 REPO="gapul/keystats"
-APP="$HOME/Applications/Keystats.app"
 API="https://api.github.com/repos/$REPO/releases/latest"
 MODE="${1:-}"
+# 自分の位置(.../Keystats.app/Contents/Resources/keystats-update)からアプリのパスを導出
+APP="$(cd "$(dirname "$0")/../.." && pwd)"
 
 notify() { osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
 ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }  # $1 >= $2 ?
@@ -16,14 +18,11 @@ ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }  #
 installed="$(defaults read "$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo 0.0.0)"
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-if ! curl -fsSL "$API" -o "$tmp/rel.json"; then
-  echo "リリース情報を取得できませんでした"; exit 0
-fi
+curl -fsSL "$API" -o "$tmp/rel.json" || { echo "リリース取得失敗"; exit 0; }
 tag="$(plutil -extract tag_name raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
 latest="${tag#v}"
 url="$(plutil -extract assets.0.browser_download_url raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
-
-if [ -z "$latest" ]; then echo "リリースがまだありません"; exit 0; fi
+[ -n "$latest" ] || { echo "リリースなし"; exit 0; }
 
 if ver_ge "$installed" "$latest"; then
   echo "最新です (installed=$installed, latest=$latest)"
@@ -32,18 +31,26 @@ if ver_ge "$installed" "$latest"; then
 fi
 
 echo "更新あり: $installed → $latest"
-if [ "$MODE" = "--check" ]; then
-  notify "keystats" "新しいバージョン $latest があります"
-  exit 10   # 呼び出し側(GUI)が「更新あり」を判別できるように
-fi
+[ "$MODE" = "--check" ] && { notify "keystats" "新しいバージョン $latest があります"; exit 10; }
 
-[ -n "$url" ] || { echo "配布アーカイブのURLが見つかりません"; exit 1; }
-echo "ダウンロード: $url"
+[ -n "$url" ] || { echo "配布URLなし"; exit 1; }
+echo "DL: $url"
 curl -fsSL "$url" -o "$tmp/pkg.zip"
-ditto -x -k "$tmp/pkg.zip" "$tmp/x"                       # 署名を保ったまま展開
-inst="$(find "$tmp/x" -maxdepth 3 -name install.command | head -1)"
-[ -n "$inst" ] || { echo "install.command が見つかりません"; exit 1; }
-chmod +x "$inst"
-bash "$inst" --update                                    # 静かに差し替え(署名DR同一なので権限は維持)
+ditto -x -k "$tmp/pkg.zip" "$tmp/x"
+new="$(find "$tmp/x" -maxdepth 3 -name Keystats.app -type d | head -1)"
+[ -n "$new" ] || { echo "新Keystats.appが見つかりません"; exit 1; }
+xattr -dr com.apple.quarantine "$new" 2>/dev/null || true
+
+echo "差し替え: $APP"
+rm -rf "$APP"; cp -R "$new" "$APP"          # 実行中でも inode は生きるので安全
+
+uid="$(id -u)"
+LA="$HOME/Library/LaunchAgents"
+# 記録デーモンを新バイナリで入れ直し(plistのパスは不変。署名DR同一で権限維持)
+launchctl bootout   "gui/$uid/net.gapul.keystats" 2>/dev/null || true
+launchctl bootstrap "gui/$uid" "$LA/net.gapul.keystats.plist" 2>/dev/null || true
+# GUI(メニューバー)を新版で再起動 → 起動時に自己ブートストラップし直す
+launchctl kickstart -k "gui/$uid/net.gapul.keystats.gui" 2>/dev/null || true
+
 echo "更新完了: $latest"
 notify "keystats" "$latest に更新しました"
