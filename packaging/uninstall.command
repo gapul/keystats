@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
-# keystats アンインストーラ。常駐を停止し、アプリと LaunchAgent を削除する。
-# データ(DB)は消さない。完全削除したい場合は末尾のコメント参照。
+# Keystats アンインストーラ。常駐を止めてアプリと LaunchAgent を削除する(データは残す)。
 set -euo pipefail
-LABEL="net.gapul.keystats"
-GUI_LABEL="net.gapul.keystats.gui"
+
+B=$'\033[1m'; G=$'\033[32m'; C=$'\033[36m'; RED=$'\033[31m'; DIM=$'\033[2m'; R=$'\033[0m'
+step() { printf "\n${B}${C}▸ %s${R}\n" "$*"; }
+ok()   { printf "   ${G}✓${R} %s\n" "$*"; }
+
+uid="$(id -u)"
 LA="$HOME/Library/LaunchAgents"
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/$GUI_LABEL" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/net.gapul.keystats.update" 2>/dev/null || true
-rm -f "$LA/$LABEL.plist" "$LA/$GUI_LABEL.plist" "$LA/net.gapul.keystats.update.plist"
+clear 2>/dev/null || true
+printf "${B}  🗑  Keystats アンインストーラ${R}\n"
+printf "  ${DIM}アプリと常駐を削除します。記録データ(統計)は残します。${R}\n"
+printf "  ────────────────────────────────────────────\n"
+read -r -p "  続けますか？ [y/N] " ans
+case "$ans" in y|Y|yes) ;; *) printf "  中止しました\n"; exit 0;; esac
+
+step "常駐を停止"
+for l in net.gapul.keystats net.gapul.keystats.gui net.gapul.keystats.update; do
+  launchctl bootout "gui/$uid/$l" 2>/dev/null || true
+done
+ok "サービス停止"
+
+step "ファイルを削除"
+rm -f "$LA/net.gapul.keystats.plist" "$LA/net.gapul.keystats.gui.plist" "$LA/net.gapul.keystats.update.plist"
 rm -rf "$HOME/Applications/Keystats.app"
 rm -f "$HOME/.local/bin/keystats" "$HOME/.local/bin/keystats-gui" "$HOME/.local/bin/keystats-update"
+ok "アプリ・LaunchAgent を削除"
 
-echo "アンインストール完了(データは残しています)。"
-echo "データも消すなら: rm -rf \"\${XDG_DATA_HOME:-\$HOME/.local/share}/keystats\" \"\${XDG_STATE_HOME:-\$HOME/.local/state}/keystats\""
-echo "入力監視の許可は システム設定 > プライバシーとセキュリティ > 入力監視 から手動で外してください。"
+printf "\n${G}${B}  ✓ アンインストール完了${R}\n"
+printf "  ${DIM}統計データは残しています。完全に消すには:${R}\n"
+printf "    rm -rf \"\${XDG_DATA_HOME:-\$HOME/.local/share}/keystats\" \"\${XDG_STATE_HOME:-\$HOME/.local/state}/keystats\"\n"
+printf "  ${DIM}入力監視の許可は システム設定 > プライバシーとセキュリティ > 入力監視 から外してください。${R}\n\n"
+read -r -p "  Enter で閉じます " _

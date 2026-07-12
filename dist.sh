@@ -23,8 +23,8 @@ sign .build/release/keystats    net.gapul.keystats
 sign .build/release/KeystatsGUI net.gapul.keystats.gui
 
 echo "==> assemble Keystats.app"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
-APP="$STAGE/Keystats.app"
+rm -rf "$STAGE"; mkdir -p "$STAGE/.payload"       # 本体は隠しフォルダ(誤ダブルクリック防止)
+APP="$STAGE/.payload/Keystats.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
 cp .build/release/keystats    "$APP/Contents/MacOS/keystatsd"
@@ -53,9 +53,27 @@ PLIST
 sign "$APP"
 codesign --verify --deep --strict "$APP" && echo "   app署名OK" || echo "   ※署名なし/検証NG"
 
-echo "==> bundle installer"
-cp packaging/install.command packaging/uninstall.command packaging/README.txt "$STAGE/"
-chmod +x "$STAGE/install.command" "$STAGE/uninstall.command"
+echo "==> bundle installer (分かりやすい名前 + カスタムアイコン)"
+INST="$STAGE/Keystatsをインストール.command"
+UNINST="$STAGE/Keystatsをアンインストール.command"
+cp packaging/install.command   "$INST"
+cp packaging/uninstall.command "$UNINST"
+cp packaging/README.txt        "$STAGE/お読みください.txt"
+chmod +x "$INST" "$UNINST"
+
+# .command に Finder カスタムアイコンを付与(NSWorkspace setIcon)。
+seticon() {  # seticon <file> <png>
+  [ -f "$2" ] || return 0
+  osascript - "$1" "$2" >/dev/null 2>&1 <<'OSA' || true
+use framework "AppKit"
+on run {f, p}
+  set img to current application's NSImage's alloc's initWithContentsOfFile:p
+  current application's NSWorkspace's sharedWorkspace's setIcon:img forFile:f options:0
+end run
+OSA
+}
+seticon "$INST"   icon/installer-icon.png
+seticon "$UNINST" icon/uninstaller-icon.png
 
 echo "==> zip"
 rm -f "$ZIP"
