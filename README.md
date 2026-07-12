@@ -7,10 +7,15 @@ macOS で「どのキーを」「どのアプリで」「いつ(時間単位)」
 
 ## 仕組み
 
-- `CGEventTap`(listenOnly) で `keyDown` を購読 → keycode を取得
+- `CGEventTap`(listenOnly) を **HID 層(`cghidEventTap`)** に張る
+  → IME(SKK 等)やショートカット処理が食う前の物理キーを拾える
+- `keyDown` に加え `flagsChanged` も購読 → **修飾キー(Shift/Control/Option/Command/Fn/Caps)も記録**
+  修飾キーは押下ごとに1回だけ数える(押下/離しを keycode で判別)。keyDown のオートリピートは除外
 - `NSWorkspace.frontmostApplication.bundleIdentifier` で前面アプリを取得
 - SQLite の `counts(hour, keycode, app, n)` に UPSERT で積む(1時間粒度に集約)
 - 外部依存なし。macOS 標準の `sqlite3` をリンクするだけ
+
+> パスワード入力中(セキュア入力)は OS がタップを止めるため記録されない(仕様どおり安全側)。
 
 DB: `~/.local/share/keystats/keystats.db`
 
@@ -26,8 +31,9 @@ DB: `~/.local/share/keystats/keystats.db`
 1. **システム設定 > プライバシーとセキュリティ > 入力監視** で `~/.local/bin/keystats` をオン
 2. `launchctl kickstart -k gui/$(id -u)/net.gapul.keystats`
 
-> 注意: TCC 権限はバイナリの cdhash に紐づくため、再ビルドして差し替えると
-> 入力監視の許可が外れる。`install.sh` を再実行したら再度オンにすること。
+> 注意: TCC 権限はバイナリの cdhash に紐づくため、デーモンを再ビルドして差し替えると
+> 入力監視の許可が外れ、再度オンにする必要がある。`install.sh` はデーモンの中身が
+> 変わった時だけ差し替えるので、アイコンや GUI だけ直した再実行では権限は維持される。
 
 ## 使い方
 

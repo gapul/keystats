@@ -13,9 +13,15 @@ swift build -c release
 
 echo "==> install binaries -> ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
-# 稼働中なら一旦止めてから差し替え（TCC権限は cdhash に紐づくので再ビルドで要再許可）
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-cp -f .build/release/keystats "$BIN"
+# デーモンは中身が変わった時だけ差し替える。TCC(入力監視)は cdhash に紐づくので、
+# バイナリが同一なら再コピーしない＝アイコン/GUIだけ直した時に権限を巻き添えで失わない。
+if [ -f "$BIN" ] && cmp -s .build/release/keystats "$BIN"; then
+  echo "   keystats(daemon): 変更なし。権限維持のため差し替えスキップ"
+else
+  echo "   keystats(daemon): 差し替え(初回/変更あり → 入力監視の再許可が必要)"
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  cp -f .build/release/keystats "$BIN"
+fi
 cp -f .build/release/KeystatsGUI "$HOME/.local/bin/keystats-gui"
 
 echo "==> build Keystats.app -> ~/Applications"
@@ -47,7 +53,9 @@ mkdir -p "$HOME/Library/LaunchAgents"
 sed "s#__HOME__#$HOME#g" "$PLIST_SRC" > "$PLIST_DST"
 
 echo "==> load"
-launchctl bootstrap "gui/$(id -u)" "$PLIST_DST"
+# 既にロード済みでも失敗しないように(スキップ時は bootout してない)
+launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" 2>/dev/null || true
+launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
 cat <<EOF
 

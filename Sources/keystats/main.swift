@@ -10,32 +10,55 @@ final class TapBox { var port: CFMachPort? }
 // C コールバック(nonisolated)から触るため unsafe を明示。タップは main のランループに載る。
 nonisolated(unsafe) var globalStore: Store?
 
+// 修飾キー(押しても文字を生まない = flagsChanged で来る)。Caps(57)はロックキーで別扱い。
+let modKeys: Set<Int> = [54, 55, 56, 58, 59, 60, 61, 62, 63]
+nonisolated(unsafe) var downMods: Set<Int> = []   // 押しっぱなし中の修飾キー(押下/離しの判別用)
+
+@inline(__always) func recordKey(_ keycode: Int) {
+  let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+  let hour = Int(Date().timeIntervalSince1970) / 3600
+  globalStore?.bump(hour: hour, keycode: keycode, app: app)
+}
+
 func runDaemon() {
   let store = Store()
   globalStore = store
 
-  let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+  // keyDown(通常キー) と flagsChanged(修飾キー) の両方を購読
+  let mask: CGEventMask =
+    (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
 
   let callback: CGEventTapCallBack = { _, type, event, refcon in
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+    switch type {
+    case .tapDisabledByTimeout, .tapDisabledByUserInput:
       if let refcon,
          let box = Unmanaged<AnyObject>.fromOpaque(refcon).takeUnretainedValue() as? TapBox,
          let port = box.port {
         CGEvent.tapEnable(tap: port, enable: true)
       }
-      return Unmanaged.passUnretained(event)
+    case .keyDown:
+      // 長押しのオートリピートは1打鍵として扱う(重複除外)
+      if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+        recordKey(Int(event.getIntegerValueField(.keyboardEventKeycode)))
+      }
+    case .flagsChanged:
+      let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
+      if kc == 57 {                       // Caps Lock は押下ごとに1回
+        recordKey(kc)
+      } else if modKeys.contains(kc) {    // Shift/Control/Option/Command/Fn
+        if downMods.contains(kc) { downMods.remove(kc) }   // 離した → 数えない
+        else { downMods.insert(kc); recordKey(kc) }        // 押した → 1回
+      }
+    default:
+      break
     }
-    guard type == .keyDown else { return Unmanaged.passUnretained(event) }
-    let keycode = Int(event.getIntegerValueField(.keyboardEventKeycode))
-    let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
-    let hour = Int(Date().timeIntervalSince1970) / 3600
-    globalStore?.bump(hour: hour, keycode: keycode, app: app)
     return Unmanaged.passUnretained(event)
   }
 
   let box = TapBox()
   guard let tap = CGEvent.tapCreate(
-    tap: .cgSessionEventTap,
+    // HID 層で拾う: IME(SKK等)やショートカット処理が食う前の物理キーを取れる。
+    tap: .cghidEventTap,
     place: .headInsertEventTap,
     options: .listenOnly,
     eventsOfInterest: mask,
