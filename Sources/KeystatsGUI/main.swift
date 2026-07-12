@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import KeystatsCore
 
 // keystats-gui — SQLite を読んで打鍵ヒートマップ＋アプリ別打鍵数を表示する SwiftUI ウィンドウ。
@@ -139,12 +140,26 @@ struct AppsBar: View {
 
 struct DashboardView: View {
   @StateObject var model = Model()
+  @State private var live = true
+  // 1.5秒ごとにDBを読み直してリアルタイム表示
+  private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
+
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      HStack {
+      HStack(spacing: 12) {
         Text("keystats").font(.system(size: 20, weight: .bold))
         Spacer()
         Text("総打鍵数 \(model.total)").font(.system(size: 14, design: .monospaced)).opacity(0.8)
+        // ライブ状態のトグル(緑=自動更新中)
+        Button {
+          live.toggle(); if live { model.reload() }
+        } label: {
+          HStack(spacing: 5) {
+            Circle().fill(live ? Color.green : Color.secondary).frame(width: 8, height: 8)
+            Text(live ? "ライブ" : "停止中").font(.system(size: 12))
+          }
+        }
+        .buttonStyle(.bordered)
         Button("更新") { model.reload() }.keyboardShortcut("r")
       }
       Keyboard(perKey: model.perKey, maxKey: model.maxKey)
@@ -155,6 +170,7 @@ struct DashboardView: View {
     .padding(20)
     .frame(minWidth: 760, minHeight: 560)
     .onAppear { model.reload() }
+    .onReceive(timer) { _ in if live { model.reload() } }
   }
 }
 
