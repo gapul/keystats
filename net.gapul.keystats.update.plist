@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.gapul.keystats.update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/Applications/Keystats.app/Contents/Resources/keystats-update</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>StandardOutPath</key>
+  <string>__STATE__/keystats/update.log</string>
+  <key>StandardErrorPath</key>
+  <string>__STATE__/keystats/update.log</string>
+</dict>
+</plist>

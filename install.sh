@@ -7,6 +7,7 @@ BIN="$HOME/.local/bin/keystats"
 PLIST_SRC="net.gapul.keystats.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/net.gapul.keystats.plist"
 LABEL="net.gapul.keystats"
+VERSION="$(cat VERSION 2>/dev/null || echo 0.0.0)"
 
 # XDG Base Directory(環境変数を尊重、無ければ既定)。launchd に注入して CLI と参照先を揃える。
 XDG_DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -51,6 +52,10 @@ cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # メニューバー用テンプレート画像(アプリアイコン流用)
 [ -f icon/MenuBarIcon.png ]    && cp -f icon/MenuBarIcon.png    "$APP/Contents/Resources/MenuBarIcon.png"
 [ -f icon/MenuBarIcon@2x.png ] && cp -f icon/MenuBarIcon@2x.png "$APP/Contents/Resources/MenuBarIcon@2x.png"
+# 自己アップデータ(バンドル同梱: 更新時に一緒に更新される)
+cp -f packaging/keystats-update "$APP/Contents/Resources/keystats-update"
+chmod +x "$APP/Contents/Resources/keystats-update"
+cp -f packaging/keystats-update "$HOME/.local/bin/keystats-update"; chmod +x "$HOME/.local/bin/keystats-update"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +66,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -77,6 +82,10 @@ subst "$PLIST_SRC" > "$PLIST_DST"
 GUI_LABEL="net.gapul.keystats.gui"
 GUI_PLIST_DST="$HOME/Library/LaunchAgents/$GUI_LABEL.plist"
 subst "net.gapul.keystats.gui.plist" > "$GUI_PLIST_DST"
+# 自己アップデータ(1日1回)
+UPD_LABEL="net.gapul.keystats.update"
+UPD_PLIST_DST="$HOME/Library/LaunchAgents/$UPD_LABEL.plist"
+subst "net.gapul.keystats.update.plist" > "$UPD_PLIST_DST"
 
 echo "==> load"
 # 記録デーモン(バンドル内バイナリを指すので入れ直す。署名が安定なので再許可は不要)
@@ -86,6 +95,9 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # メニューバーGUI(入れ替えのため一旦落として起動)
 launchctl bootout "gui/$(id -u)/$GUI_LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$GUI_PLIST_DST" 2>/dev/null || true
+# 自己アップデータ
+launchctl bootout "gui/$(id -u)/$UPD_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$UPD_PLIST_DST" 2>/dev/null || true
 
 cat <<EOF
 

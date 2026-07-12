@@ -381,6 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let menu = NSMenu()
     menu.addItem(withTitle: "ダッシュボードを開く", action: #selector(showWindow), keyEquivalent: "")
+    menu.addItem(withTitle: "アップデートを確認", action: #selector(checkUpdate), keyEquivalent: "")
     menu.addItem(.separator())
     menu.addItem(withTitle: "keystats を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     statusItem.menu = menu
@@ -400,6 +401,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc func showWindow() {
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
+  }
+
+  // 手動アップデート確認: keystats-update --check を実行し、更新があれば適用を促す。
+  @objc func checkUpdate() {
+    let updater = Bundle.main.resourceURL?.appendingPathComponent("keystats-update").path
+      ?? "\(NSHomeDirectory())/.local/bin/keystats-update"
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/bash")
+    p.arguments = [updater, "--check"]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+    NSApp.activate(ignoringOtherApps: true)
+    do { try p.run() } catch {
+      alert("更新確認に失敗", "\(error.localizedDescription)"); return
+    }
+    p.waitUntilExit()
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if p.terminationStatus == 10 {         // 更新あり
+      let a = NSAlert()
+      a.messageText = "新しいバージョンがあります"
+      a.informativeText = out.isEmpty ? "最新版に更新できます。" : out
+      a.addButton(withTitle: "今すぐ更新"); a.addButton(withTitle: "あとで")
+      if a.runModal() == .alertFirstButtonReturn {
+        // launchd 経由で更新(GUIが再起動されても完走する)
+        let k = Process(); k.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        k.arguments = ["kickstart", "-k", "gui/\(getuid())/net.gapul.keystats.update"]
+        try? k.run()
+        alert("アップデート中", "バックグラウンドで更新します。完了すると通知が出ます。")
+      }
+    } else {
+      alert("keystats", out.isEmpty ? "最新版です。" : out)
+    }
+  }
+
+  private func alert(_ title: String, _ body: String) {
+    let a = NSAlert(); a.messageText = title; a.informativeText = body
+    a.addButton(withTitle: "OK"); a.runModal()
   }
 
   func updateStatus() {

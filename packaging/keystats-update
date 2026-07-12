@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# keystats 自己アップデータ。GitHub Releases の最新版を見て、新しければ DL して差し替える。
+# 依存なし(curl / plutil / ditto は macOS 標準)。定期実行(LaunchAgent) と手動の両対応。
+#   keystats-update            … 新しければ更新
+#   keystats-update --check    … 確認だけ(更新しない)。stdout に状態を出す
+set -euo pipefail
+
+REPO="gapul/keystats"
+APP="$HOME/Applications/Keystats.app"
+API="https://api.github.com/repos/$REPO/releases/latest"
+MODE="${1:-}"
+
+notify() { osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
+ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }  # $1 >= $2 ?
+
+installed="$(defaults read "$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo 0.0.0)"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+if ! curl -fsSL "$API" -o "$tmp/rel.json"; then
+  echo "リリース情報を取得できませんでした"; exit 0
+fi
+tag="$(plutil -extract tag_name raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
+latest="${tag#v}"
+url="$(plutil -extract assets.0.browser_download_url raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
+
+if [ -z "$latest" ]; then echo "リリースがまだありません"; exit 0; fi
+
+if ver_ge "$installed" "$latest"; then
+  echo "最新です (installed=$installed, latest=$latest)"
+  [ "$MODE" = "--check" ] && notify "keystats" "最新です ($installed)"
+  exit 0
+fi
+
+echo "更新あり: $installed → $latest"
+if [ "$MODE" = "--check" ]; then
+  notify "keystats" "新しいバージョン $latest があります"
+  exit 10   # 呼び出し側(GUI)が「更新あり」を判別できるように
+fi
+
+[ -n "$url" ] || { echo "配布アーカイブのURLが見つかりません"; exit 1; }
+echo "ダウンロード: $url"
+curl -fsSL "$url" -o "$tmp/pkg.zip"
+ditto -x -k "$tmp/pkg.zip" "$tmp/x"                       # 署名を保ったまま展開
+inst="$(find "$tmp/x" -maxdepth 3 -name install.command | head -1)"
+[ -n "$inst" ] || { echo "install.command が見つかりません"; exit 1; }
+chmod +x "$inst"
+bash "$inst" --update                                    # 静かに差し替え(署名DR同一なので権限は維持)
+echo "更新完了: $latest"
+notify "keystats" "$latest に更新しました"
