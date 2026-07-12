@@ -8,8 +8,23 @@ PLIST_SRC="net.gapul.keystats.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/net.gapul.keystats.plist"
 LABEL="net.gapul.keystats"
 
+# 署名アイデンティティ(安定した Team に紐づく署名で入力監視の許可が再ビルド後も維持される)。
+# 優先: Developer ID > Apple Development > keystats 自己署名。KEYSTATS_SIGN_ID で上書き可。
+SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | awk -F'"' '/Developer ID Application|Apple Development|keystats self-signed/{print $2; exit}')}"
+
+sign() {  # sign <path> [identifier]
+  [ -n "$SIGN_ID" ] || { echo "   (署名IDなし: 署名をスキップ。再ビルドで権限が外れます)"; return 0; }
+  codesign --force --sign "$SIGN_ID" --timestamp=none \
+    ${2:+--identifier "$2"} "$1" >/dev/null 2>&1 \
+    && echo "   signed: $(basename "$1")" || echo "   署名失敗: $(basename "$1")"
+}
+
 echo "==> build (release)"
 swift build -c release
+echo "==> codesign ($( [ -n "$SIGN_ID" ] && echo "$SIGN_ID" || echo none ))"
+sign .build/release/keystats    net.gapul.keystats
+sign .build/release/KeystatsGUI net.gapul.keystats.gui
 
 echo "==> install binaries -> ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
@@ -32,6 +47,9 @@ cp -f .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
 # Liquid Glass アイコン: Assets.car(本体) + AppIcon.icns(フォールバック)
 cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 [ -f icon/Assets.car ] && cp -f icon/Assets.car "$APP/Contents/Resources/Assets.car"
+# メニューバー用テンプレート画像(アプリアイコン流用)
+[ -f icon/MenuBarIcon.png ]    && cp -f icon/MenuBarIcon.png    "$APP/Contents/Resources/MenuBarIcon.png"
+[ -f icon/MenuBarIcon@2x.png ] && cp -f icon/MenuBarIcon@2x.png "$APP/Contents/Resources/MenuBarIcon@2x.png"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,6 +66,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
+# .app をまとめて署名(Resources 差し替え後に)
+sign "$APP"
 
 echo "==> install LaunchAgents"
 mkdir -p "$HOME/Library/LaunchAgents"

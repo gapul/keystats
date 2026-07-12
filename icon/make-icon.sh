@@ -16,6 +16,11 @@ inkscape --export-type=png --export-width=1024 --export-height=1024 \
 magick -size 1024x1024 xc:none \( "$W/art.png" -resize 720x720 \) \
   -gravity center -composite Assets-Keycap.png 2>/dev/null || true
 
+# メニューバー用テンプレート画像: 白い内側を透明化し輪郭+Aだけ残す(単色マスク化に耐える)
+magick "$W/art.png" -fuzz 12% -fill none -opaque white -trim +repage \
+  -resize 36x36 -background none -gravity center -extent 36x36 MenuBarIcon@2x.png 2>/dev/null || true
+magick MenuBarIcon@2x.png -resize 18x18 MenuBarIcon.png 2>/dev/null || true
+
 # 2) .icon バンドル(Icon Composer 互換ソース)を組む
 ICON="AppIcon.icon"; rm -rf "$ICON"; mkdir -p "$ICON/Assets"
 cp Assets-Keycap.png "$ICON/Assets/Keycap.png"; rm -f Assets-Keycap.png

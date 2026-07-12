@@ -232,8 +232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func setupStatusItem() {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     if let b = statusItem.button {
-      let img = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "keystats")
+      // アプリアイコン(キーキャップ)流用のテンプレート画像。無ければSFシンボル。
+      let img = NSImage(named: "MenuBarIcon")
+        ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "keystats")
       img?.isTemplate = true               // メニューバーの明暗に自動追従
+      img?.size = NSSize(width: 18, height: 18)
       b.image = img
       b.imagePosition = .imageLeading
     }
