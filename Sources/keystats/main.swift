@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import IOKit
 import KeystatsCore
 
 // keystats — macOS 全キーボードの打鍵をキーコード＋アプリ単位で集計する常駐。
@@ -36,6 +37,31 @@ nonisolated(unsafe) var downMods: Set<Int> = []   // 押しっぱなし中の修
   globalStore?.bumpCombo(hour: hour, combo: label, app: app)
 }
 
+// システム全体のアイドル秒数(HIDIdleTime)。マウスも含む最後の入力からの経過。
+func systemIdleSeconds() -> Double {
+  var iter: io_iterator_t = 0
+  guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOHIDSystem"), &iter) == KERN_SUCCESS
+  else { return 0 }
+  defer { IOObjectRelease(iter) }
+  let entry = IOIteratorNext(iter)
+  guard entry != 0 else { return 0 }
+  defer { IOObjectRelease(entry) }
+  var props: Unmanaged<CFMutableDictionary>?
+  guard IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+        let dict = props?.takeRetainedValue() as? [String: Any],
+        let idleNs = dict["HIDIdleTime"] as? Int64 else { return 0 }
+  return Double(idleNs) / 1_000_000_000.0
+}
+
+// 前面アプリの稼働時間を一定間隔で加算。60秒以上アイドルなら数えない(離席をカウントしない)。
+let appTimeInterval = 5.0
+func recordAppTime() {
+  guard systemIdleSeconds() < 60 else { return }
+  let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+  let hour = Int(Date().timeIntervalSince1970) / 3600
+  globalStore?.bumpAppTime(hour: hour, app: app, seconds: Int(appTimeInterval))
+}
+
 func runDaemon() {
   let store = Store()
   globalStore = store
@@ -58,6 +84,9 @@ func runDaemon() {
         let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
         recordKey(kc)                              // 物理キーとしても数える
         recordComboIfNeeded(kc, event.flags)       // 修飾付きなら組み合わせも記録
+        // キーボード種別(内蔵/外付けの区別)
+        let kbt = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
+        globalStore?.bumpKbType(hour: Int(Date().timeIntervalSince1970) / 3600, kbtype: kbt)
       }
     case .flagsChanged:
       let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
@@ -95,6 +124,11 @@ func runDaemon() {
   let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
   CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
   CGEvent.tapEnable(tap: tap, enable: true)
+
+  // アプリ稼働時間の定期記録(前面アプリ + 非アイドル時のみ)
+  let appTimer = Timer(timeInterval: appTimeInterval, repeats: true) { _ in recordAppTime() }
+  RunLoop.current.add(appTimer, forMode: .common)
+
   FileHandle.standardError.write("keystats: 記録開始 (\(Paths.dbPath))\n".data(using: .utf8)!)
   CFRunLoopRun()
 }

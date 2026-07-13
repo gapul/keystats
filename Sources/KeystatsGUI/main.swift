@@ -121,6 +121,7 @@ struct BarList: View {
   var color: Color
   var labelWidth: CGFloat = 116
   var rounded = false
+  var valueFmt: (Int) -> String = { "\($0)" }
   var body: some View {
     let maxN = max(rows.first?.n ?? 1, 1)
     VStack(spacing: 7) {
@@ -140,7 +141,7 @@ struct BarList: View {
                 .frame(width: max(3, geo.size.width * CGFloat(r.n) / CGFloat(maxN)))
             }
           }.frame(height: 13)
-          Text("\(r.n)").font(.system(size: 11, design: .monospaced))
+          Text(valueFmt(r.n)).font(.system(size: 11, design: .monospaced))
             .foregroundStyle(Theme.sub).frame(width: 56, alignment: .trailing)
         }
       }
@@ -239,38 +240,107 @@ struct DailyTrend: View {           // 日別トレンド(直近)
   }
 }
 
+struct WeekdayHeatmap: View {       // 曜日 × 時間帯
+  let grid: [[Int]]                 // [7][24]
+  private let days = ["日", "月", "火", "水", "木", "金", "土"]
+  var body: some View {
+    let maxN = max(grid.flatMap { $0 }.max() ?? 1, 1)
+    VStack(spacing: 2) {
+      HStack(spacing: 2) {
+        Text("").frame(width: 20)
+        ForEach(0..<24, id: \.self) { h in
+          Text(h % 6 == 0 ? "\(h)" : "").font(.system(size: 7)).foregroundStyle(Theme.sub)
+            .frame(maxWidth: .infinity)
+        }
+      }
+      ForEach(0..<7, id: \.self) { wd in
+        HStack(spacing: 2) {
+          Text(days[wd]).font(.system(size: 9)).foregroundStyle(Theme.sub).frame(width: 20, alignment: .leading)
+          ForEach(0..<24, id: \.self) { h in
+            RoundedRectangle(cornerRadius: 2).fill(cell(grid[wd][h], maxN))
+              .frame(maxWidth: .infinity).frame(height: 13)
+          }
+        }
+      }
+    }
+  }
+  private func cell(_ n: Int, _ maxN: Int) -> Color {
+    guard n > 0 else { return emptyKey }
+    return Theme.accent.opacity(0.15 + 0.85 * pow(Double(n) / Double(maxN), 0.5))
+  }
+}
+
 // MARK: - データ
 
+enum Period: String, CaseIterable, Identifiable {
+  case today = "今日", week = "今週", all = "全期間"
+  var id: String { rawValue }
+  var sinceHour: Int {
+    let cal = Calendar.current
+    switch self {
+    case .all: return 0
+    case .today: return Int(cal.startOfDay(for: Date()).timeIntervalSince1970) / 3600
+    case .week:
+      let c = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+      let start = cal.date(from: c) ?? cal.startOfDay(for: Date())
+      return Int(start.timeIntervalSince1970) / 3600
+    }
+  }
+}
+
 final class Model: ObservableObject {
+  @Published var period: Period = .all { didSet { reload() } }
   @Published var total = 0
   @Published var today = 0
   @Published var perKey: [Int: Int] = [:]
   @Published var maxKey = 0
   @Published var apps: [AppCount] = []
+  @Published var appTime: [AppCount] = []
   @Published var combos: [ComboCount] = []
   @Published var hourly: [Int] = Array(repeating: 0, count: 24)
   @Published var daily: [DayCount] = []
+  @Published var weekday: [[Int]] = Array(repeating: Array(repeating: 0, count: 24), count: 7)
   @Published var topKeys: [(Int, Int)] = []
+  @Published var kbTypes: [(Int, Int)] = []
 
   func reload() {
     let s = Store()
     let off = TimeZone.current.secondsFromGMT() / 3600
-    let pk = s.perKey()
+    let sh = period.sinceHour
     total = s.total()
     let startHour = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) / 3600
     today = s.total(sinceHour: startHour)
+    let pk = s.perKey(sinceHour: sh)
     perKey = pk
     maxKey = pk.values.max() ?? 0
-    apps = s.perApp()
-    combos = s.topCombos(12)
-    hourly = s.hourly(offsetHours: off)
+    apps = s.perApp(sinceHour: sh)
+    appTime = s.perAppTime(sinceHour: sh)
+    combos = s.topCombos(12, sinceHour: sh)
+    hourly = s.hourly(offsetHours: off, sinceHour: sh)
     daily = s.daily(days: 14, offsetHours: off)
-    topKeys = s.topKeys(12)
+    weekday = s.weekdayHour(offsetHours: off, sinceHour: sh)
+    topKeys = s.topKeys(12, sinceHour: sh)
+    kbTypes = s.perKbType(sinceHour: sh)
   }
 
   var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
   var topAppName: String { apps.first.map { shortApp($0.app) } ?? "—" }
   var distinctKeys: Int { perKey.values.filter { $0 > 0 }.count }
+}
+
+func fmtDuration(_ seconds: Int) -> String {
+  let h = seconds / 3600, m = (seconds % 3600) / 60
+  if h > 0 { return "\(h)h \(m)m" }
+  if m > 0 { return "\(m)m" }
+  return "\(seconds)s"
+}
+
+func kbTypeLabel(_ t: Int) -> String {
+  // 代表的な内蔵キーボードの keyboardType。厳密でないので概ねの目安。
+  switch t {
+  case 40, 41, 42, 43, 44, 45, 46, 47: return "内蔵/Apple (\(t))"
+  default: return "外付け (\(t))"
+  }
 }
 
 // MARK: - ダッシュボード
@@ -284,7 +354,12 @@ struct DashboardView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
         header
-        // 統計カード
+        // 期間フィルタ(分析カードに反映)
+        Picker("", selection: $model.period) {
+          ForEach(Period.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 280)
+        // 統計カード(総数・今日は常に全期間基準)
         HStack(spacing: 12) {
           StatCard(label: "総打鍵数", value: model.total.formatted(), accent: true)
           StatCard(label: "今日", value: model.today.formatted(),
@@ -302,6 +377,7 @@ struct DashboardView: View {
           Card(title: "時間帯別", icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
           Card(title: "日別トレンド(14日)", icon: "chart.bar") { DailyTrend(daily: model.daily) }
         }
+        Card(title: "曜日 × 時間帯", icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
         HStack(alignment: .top, spacing: 16) {
           Card(title: "よく押すキー", icon: "trophy") {
             BarList(rows: model.topKeys.map { (label($0.0), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true)
@@ -310,8 +386,17 @@ struct DashboardView: View {
             BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
           }
         }
-        Card(title: "アプリ別打鍵数", icon: "app.badge") {
-          BarList(rows: model.apps.prefix(14).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150)
+        HStack(alignment: .top, spacing: 16) {
+          Card(title: "アプリ別打鍵数", icon: "app.badge") {
+            BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150)
+          }
+          Card(title: "アプリ稼働時間", icon: "hourglass") {
+            BarList(rows: model.appTime.prefix(12).map { (label: shortApp($0.app), n: $0.n) },
+                    color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration)
+          }
+        }
+        Card(title: "キーボード別", icon: "keyboard.badge.ellipsis") {
+          BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150)
         }
       }
       .padding(20)

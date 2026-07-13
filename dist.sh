@@ -12,8 +12,11 @@ REPO="gapul/keystats"
 STAGE="dist/keystats-$VERSION"
 ZIP="dist/keystats-$VERSION-macos-$ARCH.zip"
 
-SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null \
-  | awk -F'"' '/Developer ID Application|Apple Development|keystats self-signed/{print $2; exit}')}"
+# 専用10年自己署名 "Keystats Signing" を最優先(DR固定で更新後も権限維持)。無ければフォールバック。
+SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -p codesigning 2>/dev/null \
+  | awk -F'"' '/Keystats Signing/{print $2; exit}')}"
+[ -n "$SIGN_ID" ] || SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+  | awk -F'"' '/Developer ID Application|Apple Development/{print $2; exit}')"
 sign() { [ -n "$SIGN_ID" ] && codesign --force --sign "$SIGN_ID" --timestamp=none \
   ${2:+--identifier "$2"} "$1" >/dev/null 2>&1 || true; }
 

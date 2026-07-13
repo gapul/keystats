@@ -15,10 +15,13 @@ XDG_STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
 mkdir -p "$XDG_DATA/keystats" "$XDG_STATE/keystats"
 subst() { sed -e "s#__HOME__#$HOME#g" -e "s#__DATA__#$XDG_DATA#g" -e "s#__STATE__#$XDG_STATE#g" "$1"; }
 
-# 署名アイデンティティ(安定した Team に紐づく署名で入力監視の許可が再ビルド後も維持される)。
-# 優先: Developer ID > Apple Development > keystats 自己署名。KEYSTATS_SIGN_ID で上書き可。
-SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null \
-  | awk -F'"' '/Developer ID Application|Apple Development|keystats self-signed/{print $2; exit}')}"
+# 署名アイデンティティ。専用の10年自己署名 "Keystats Signing" を最優先(DRが証明書固定で
+# 更新後も入力監視が維持される)。無ければ Apple Development 等にフォールバック。
+# 未作成なら codesign/setup-signing.sh で作れる。KEYSTATS_SIGN_ID で上書き可。
+SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -p codesigning 2>/dev/null \
+  | awk -F'"' '/Keystats Signing/{print $2; exit}')}"
+[ -n "$SIGN_ID" ] || SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+  | awk -F'"' '/Developer ID Application|Apple Development/{print $2; exit}')"
 
 sign() {  # sign <path> [identifier]
   [ -n "$SIGN_ID" ] || { echo "   (署名IDなし: 署名をスキップ。再ビルドで権限が外れます)"; return 0; }

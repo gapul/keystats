@@ -50,6 +50,8 @@ public final class Store {
   private var handle: OpaquePointer?
   private var upsert: OpaquePointer?
   private var comboUpsert: OpaquePointer?
+  private var apptimeUpsert: OpaquePointer?
+  private var kbtypeUpsert: OpaquePointer?
   private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   public init(path: String = Paths.dbPath) {
@@ -86,6 +88,32 @@ public final class Store {
       INSERT INTO combos (hour, combo, app, n) VALUES (?, ?, ?, 1)
       ON CONFLICT(hour, combo, app) DO UPDATE SET n = n + 1;
     """, -1, &comboUpsert, nil)
+    // アプリ稼働時間(前面アプリの秒数)。
+    exec("""
+      CREATE TABLE IF NOT EXISTS apptime (
+        hour    INTEGER NOT NULL,
+        app     TEXT    NOT NULL,
+        seconds INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, app)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO apptime (hour, app, seconds) VALUES (?, ?, ?)
+      ON CONFLICT(hour, app) DO UPDATE SET seconds = seconds + excluded.seconds;
+    """, -1, &apptimeUpsert, nil)
+    // キーボード種別(内蔵/外付けの区別。kCGKeyboardEventKeyboardType)。
+    exec("""
+      CREATE TABLE IF NOT EXISTS kbtype (
+        hour   INTEGER NOT NULL,
+        kbtype INTEGER NOT NULL,
+        n      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, kbtype)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO kbtype (hour, kbtype, n) VALUES (?, ?, 1)
+      ON CONFLICT(hour, kbtype) DO UPDATE SET n = n + 1;
+    """, -1, &kbtypeUpsert, nil)
   }
 
   public func exec(_ sql: String) { sqlite3_exec(handle, sql, nil, nil, nil) }
@@ -108,6 +136,23 @@ public final class Store {
     sqlite3_step(comboUpsert)
   }
 
+  public func bumpAppTime(hour: Int, app: String, seconds: Int) {
+    guard let apptimeUpsert else { return }
+    sqlite3_reset(apptimeUpsert)
+    sqlite3_bind_int64(apptimeUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_text(apptimeUpsert, 2, app, -1, Store.TRANSIENT)
+    sqlite3_bind_int64(apptimeUpsert, 3, sqlite3_int64(seconds))
+    sqlite3_step(apptimeUpsert)
+  }
+
+  public func bumpKbType(hour: Int, kbtype: Int) {
+    guard let kbtypeUpsert else { return }
+    sqlite3_reset(kbtypeUpsert)
+    sqlite3_bind_int64(kbtypeUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_int64(kbtypeUpsert, 2, sqlite3_int64(kbtype))
+    sqlite3_step(kbtypeUpsert)
+  }
+
   private func query(_ sql: String, _ row: (OpaquePointer) -> Void) {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -115,36 +160,31 @@ public final class Store {
     while sqlite3_step(stmt) == SQLITE_ROW { row(stmt!) }
   }
 
-  // MARK: 集計(読み取り)
+  // MARK: 集計(読み取り)。sinceHour>0 でその hour 以降に絞る(0=全期間)。
 
-  public func total() -> Int {
-    var t = 0
-    query("SELECT COALESCE(SUM(n),0) FROM counts;") { t = Int(sqlite3_column_int64($0, 0)) }
-    return t
-  }
+  private func since(_ h: Int) -> String { h > 0 ? " WHERE hour >= \(h)" : "" }
 
-  /// 指定 hour 以降の合計(今日ぶんの集計に使う)
-  public func total(sinceHour: Int) -> Int {
+  public func total(sinceHour: Int = 0) -> Int {
     var t = 0
-    query("SELECT COALESCE(SUM(n),0) FROM counts WHERE hour >= \(sinceHour);") {
+    query("SELECT COALESCE(SUM(n),0) FROM counts" + since(sinceHour) + ";") {
       t = Int(sqlite3_column_int64($0, 0))
     }
     return t
   }
 
   /// keycode -> 打鍵数
-  public func perKey() -> [Int: Int] {
+  public func perKey(sinceHour: Int = 0) -> [Int: Int] {
     var out: [Int: Int] = [:]
-    query("SELECT keycode, SUM(n) FROM counts GROUP BY keycode;") {
+    query("SELECT keycode, SUM(n) FROM counts" + since(sinceHour) + " GROUP BY keycode;") {
       out[Int(sqlite3_column_int64($0, 0))] = Int(sqlite3_column_int64($0, 1))
     }
     return out
   }
 
   /// アプリ別打鍵数(降順)
-  public func perApp() -> [AppCount] {
+  public func perApp(sinceHour: Int = 0) -> [AppCount] {
     var out: [AppCount] = []
-    query("SELECT app, SUM(n) AS s FROM counts GROUP BY app ORDER BY s DESC;") {
+    query("SELECT app, SUM(n) AS s FROM counts" + since(sinceHour) + " GROUP BY app ORDER BY s DESC;") {
       out.append(AppCount(app: String(cString: sqlite3_column_text($0, 0)),
                           n: Int(sqlite3_column_int64($0, 1))))
     }
@@ -152,18 +192,18 @@ public final class Store {
   }
 
   /// keycode トップN [(keycode, n)]
-  public func topKeys(_ limit: Int) -> [(Int, Int)] {
+  public func topKeys(_ limit: Int, sinceHour: Int = 0) -> [(Int, Int)] {
     var out: [(Int, Int)] = []
-    query("SELECT keycode, SUM(n) AS s FROM counts GROUP BY keycode ORDER BY s DESC LIMIT \(limit);") {
+    query("SELECT keycode, SUM(n) AS s FROM counts" + since(sinceHour) + " GROUP BY keycode ORDER BY s DESC LIMIT \(limit);") {
       out.append((Int(sqlite3_column_int64($0, 0)), Int(sqlite3_column_int64($0, 1))))
     }
     return out
   }
 
   /// 時間帯別(ローカル 0..23)の打鍵数。offsetHours はローカルの GMT オフセット(時)。
-  public func hourly(offsetHours off: Int) -> [Int] {
+  public func hourly(offsetHours off: Int, sinceHour: Int = 0) -> [Int] {
     var out = Array(repeating: 0, count: 24)
-    query("SELECT ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM counts GROUP BY h;") {
+    query("SELECT ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM counts" + since(sinceHour) + " GROUP BY h;") {
       let h = Int(sqlite3_column_int64($0, 0))
       if h >= 0, h < 24 { out[h] = Int(sqlite3_column_int64($0, 1)) }
     }
@@ -179,12 +219,43 @@ public final class Store {
     return out.reversed()
   }
 
+  /// 曜日(0=日..6=土) × 時間帯(0..23) の打鍵数マトリクス
+  public func weekdayHour(offsetHours off: Int, sinceHour: Int = 0) -> [[Int]] {
+    var out = Array(repeating: Array(repeating: 0, count: 24), count: 7)
+    // localDay=(hour+off)/24, weekday=(localDay+4)%7 (1970-01-01=木、日曜=0にするため+4)
+    query("SELECT ((hour + \(off)) / 24 + 4) % 7 AS wd, ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM counts"
+          + since(sinceHour) + " GROUP BY wd, h;") {
+      let wd = Int(sqlite3_column_int64($0, 0)); let h = Int(sqlite3_column_int64($0, 1))
+      if wd >= 0, wd < 7, h >= 0, h < 24 { out[wd][h] = Int(sqlite3_column_int64($0, 2)) }
+    }
+    return out
+  }
+
   /// 組み合わせキー(ショートカット)トップN
-  public func topCombos(_ limit: Int) -> [ComboCount] {
+  public func topCombos(_ limit: Int, sinceHour: Int = 0) -> [ComboCount] {
     var out: [ComboCount] = []
-    query("SELECT combo, SUM(n) AS s FROM combos GROUP BY combo ORDER BY s DESC LIMIT \(limit);") {
+    query("SELECT combo, SUM(n) AS s FROM combos" + since(sinceHour) + " GROUP BY combo ORDER BY s DESC LIMIT \(limit);") {
       out.append(ComboCount(combo: String(cString: sqlite3_column_text($0, 0)),
                             n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out
+  }
+
+  /// アプリ別の稼働秒数(降順)
+  public func perAppTime(sinceHour: Int = 0) -> [AppCount] {
+    var out: [AppCount] = []
+    query("SELECT app, SUM(seconds) AS s FROM apptime" + since(sinceHour) + " GROUP BY app ORDER BY s DESC;") {
+      out.append(AppCount(app: String(cString: sqlite3_column_text($0, 0)),
+                          n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out
+  }
+
+  /// キーボード種別ごとの打鍵数(降順)。kbtype は kCGKeyboardEventKeyboardType。
+  public func perKbType(sinceHour: Int = 0) -> [(Int, Int)] {
+    var out: [(Int, Int)] = []
+    query("SELECT kbtype, SUM(n) AS s FROM kbtype" + since(sinceHour) + " GROUP BY kbtype ORDER BY s DESC;") {
+      out.append((Int(sqlite3_column_int64($0, 0)), Int(sqlite3_column_int64($0, 1))))
     }
     return out
   }
