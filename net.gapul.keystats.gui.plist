@@ -12,7 +12,7 @@
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  <dict><key>SuccessfulExit</key><false/></dict>
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
   <!-- GUI も同じ DB を読むよう XDG を明示 -->

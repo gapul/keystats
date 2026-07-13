@@ -54,7 +54,9 @@ cat > "$LA/net.gapul.keystats.gui.plist" <<PLIST
 <plist version="1.0"><dict>
   <key>Label</key><string>net.gapul.keystats.gui</string>
   <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/KeystatsGUI</string><string>--background</string></array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
 $xdg
 </dict></plist>
 PLIST

@@ -303,8 +303,9 @@ final class Model: ObservableObject {
   @Published var topKeys: [(Int, Int)] = []
   @Published var kbTypes: [(Int, Int)] = []
 
+  private let s = Store()   // 接続を使い回す(毎回開くと fd リークで枯渇→GUIが落ちる)
+
   func reload() {
-    let s = Store()
     let off = TimeZone.current.secondsFromGMT() / 3600
     let sh = period.sinceHour
     total = s.total()
@@ -604,7 +605,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       + "<key>StandardOutPath</key><string>\(esc(dLog))</string><key>StandardErrorPath</key><string>\(esc(dLog))</string>")
     write("net.gapul.keystats.gui",   // ログイン自動起動用。走っている自分は触らない
       "<key>ProgramArguments</key><array><string>\(esc(app))/Contents/MacOS/KeystatsGUI</string><string>--background</string></array>"
-      + "<key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>LimitLoadToSessionType</key><string>Aqua</string>"
+      // KeepAlive: 異常終了(クラッシュ)時のみ再起動。ユーザーがメニューから終了(正常終了)したら再起動しない。
+      + "<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>"
+      + "<key>LimitLoadToSessionType</key><string>Aqua</string>"
       + xdg)
     let uLog = "\(stateHome)/keystats/update.log"
     let uURL = write("net.gapul.keystats.update",
@@ -626,11 +629,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  private let statusStore = Store()   // メニューバー用に接続を使い回す(fdリーク防止)
   func updateStatus() {
-    let store = Store()
     // JST の今日の 0 時以降を集計
     let startHour = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) / 3600
-    statusItem.button?.title = " \(store.total(sinceHour: startHour))"
+    statusItem.button?.title = " \(statusStore.total(sinceHour: startHour))"
   }
 
   // ウィンドウを閉じてもアプリは終了させない(メニューバーに残す)

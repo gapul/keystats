@@ -116,6 +116,14 @@ public final class Store {
     """, -1, &kbtypeUpsert, nil)
   }
 
+  deinit {   // 接続とプリペアド文を必ず解放(GUIが頻繁に生成するのでリークすると fd 枯渇→open失敗)
+    sqlite3_finalize(upsert)
+    sqlite3_finalize(comboUpsert)
+    sqlite3_finalize(apptimeUpsert)
+    sqlite3_finalize(kbtypeUpsert)
+    sqlite3_close_v2(handle)
+  }
+
   public func exec(_ sql: String) { sqlite3_exec(handle, sql, nil, nil, nil) }
 
   public func bump(hour: Int, keycode: Int, app: String) {
