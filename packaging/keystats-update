@@ -45,12 +45,13 @@ echo "差し替え: $APP"
 rm -rf "$APP"; cp -R "$new" "$APP"          # 実行中でも inode は生きるので安全
 
 uid="$(id -u)"
-LA="$HOME/Library/LaunchAgents"
-# 記録デーモンを新バイナリで入れ直し(plistのパスは不変。署名DR同一で権限維持)
-launchctl bootout   "gui/$uid/net.gapul.keystats" 2>/dev/null || true
-launchctl bootstrap "gui/$uid" "$LA/net.gapul.keystats.plist" 2>/dev/null || true
-# GUI(メニューバー)を新版で再起動 → 起動時に自己ブートストラップし直す
-launchctl kickstart -k "gui/$uid/net.gapul.keystats.gui" 2>/dev/null || true
+# 旧 daemon / GUI を止めてから新アプリを起動する。アプリが起動時に daemon/gui/update の
+# LaunchAgent を自己登録し直す(plist が消えていても再生成される = 堅い)。
+launchctl bootout "gui/$uid/net.gapul.keystats"     2>/dev/null || true
+launchctl bootout "gui/$uid/net.gapul.keystats.gui" 2>/dev/null || true
+pkill -f "Keystats.app/Contents/MacOS/KeystatsGUI"  2>/dev/null || true
+sleep 1
+open -g "$APP"                               # -g: 前面に出さずに起動 → 自己ブートストラップ
 
 echo "更新完了: $latest"
 notify "keystats" "$latest に更新しました"
