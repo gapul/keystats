@@ -45,6 +45,18 @@ public struct AppCount { public let app: String; public let n: Int }
 public struct ComboCount { public let combo: String; public let n: Int }
 public struct DayCount { public let day: Int; public let n: Int }   // day = ローカル基準の epoch 日数
 
+// 入力速度の集計値。active_ms は「連続打鍵(gap<2s)中の合計ミリ秒」、keys はその打鍵数。
+public struct TypingSummary {
+  public let activeMs: Int; public let keys: Int; public let peakKpm: Int
+  public init(activeMs: Int, keys: Int, peakKpm: Int) {
+    self.activeMs = activeMs; self.keys = keys; self.peakKpm = peakKpm
+  }
+  /// フロー中の平均 KPM(キー/分)。実際に叩いていた時間で割る。
+  public var avgKpm: Int { activeMs > 0 ? Int(Double(keys) / (Double(activeMs) / 60_000.0)) : 0 }
+  /// 実打鍵時間(秒)。
+  public var activeSeconds: Int { activeMs / 1000 }
+}
+
 // SQLite C API 直叩き(外部依存なし)。デーモンは書き込み、GUI は読み込みに使う。
 public final class Store {
   private var handle: OpaquePointer?
@@ -52,6 +64,7 @@ public final class Store {
   private var comboUpsert: OpaquePointer?
   private var apptimeUpsert: OpaquePointer?
   private var kbtypeUpsert: OpaquePointer?
+  private var typingUpsert: OpaquePointer?
   private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   public init(path: String = Paths.dbPath) {
@@ -114,6 +127,22 @@ public final class Store {
       INSERT INTO kbtype (hour, kbtype, n) VALUES (?, ?, 1)
       ON CONFLICT(hour, kbtype) DO UPDATE SET n = n + 1;
     """, -1, &kbtypeUpsert, nil)
+    // 入力速度。active_ms=連続打鍵中の合計ミリ秒、keys=その打鍵数、peak_kpm=その時間内の最速バースト。
+    exec("""
+      CREATE TABLE IF NOT EXISTS typing (
+        hour      INTEGER PRIMARY KEY,
+        active_ms INTEGER NOT NULL DEFAULT 0,
+        keys      INTEGER NOT NULL DEFAULT 0,
+        peak_kpm  INTEGER NOT NULL DEFAULT 0
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO typing (hour, active_ms, keys, peak_kpm) VALUES (?, ?, 1, ?)
+      ON CONFLICT(hour) DO UPDATE SET
+        active_ms = active_ms + excluded.active_ms,
+        keys      = keys + 1,
+        peak_kpm  = MAX(peak_kpm, excluded.peak_kpm);
+    """, -1, &typingUpsert, nil)
   }
 
   deinit {   // 接続とプリペアド文を必ず解放(GUIが頻繁に生成するのでリークすると fd 枯渇→open失敗)
@@ -121,6 +150,7 @@ public final class Store {
     sqlite3_finalize(comboUpsert)
     sqlite3_finalize(apptimeUpsert)
     sqlite3_finalize(kbtypeUpsert)
+    sqlite3_finalize(typingUpsert)
     sqlite3_close_v2(handle)
   }
 
@@ -159,6 +189,16 @@ public final class Store {
     sqlite3_bind_int64(kbtypeUpsert, 1, sqlite3_int64(hour))
     sqlite3_bind_int64(kbtypeUpsert, 2, sqlite3_int64(kbtype))
     sqlite3_step(kbtypeUpsert)
+  }
+
+  /// 入力速度を記録。activeMs=前打鍵からの間隔(ms, gap<2s のみ)、peakKpm=直近バーストの瞬間速度。
+  public func bumpTyping(hour: Int, activeMs: Int, peakKpm: Int) {
+    guard let typingUpsert else { return }
+    sqlite3_reset(typingUpsert)
+    sqlite3_bind_int64(typingUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_int64(typingUpsert, 2, sqlite3_int64(activeMs))
+    sqlite3_bind_int64(typingUpsert, 3, sqlite3_int64(peakKpm))
+    sqlite3_step(typingUpsert)
   }
 
   private func query(_ sql: String, _ row: (OpaquePointer) -> Void) {
@@ -257,6 +297,16 @@ public final class Store {
                           n: Int(sqlite3_column_int64($0, 1))))
     }
     return out
+  }
+
+  /// 入力速度の集計(平均KPM・ピーク・実打鍵時間)。sinceHour で期間を絞る。
+  public func typingSummary(sinceHour: Int = 0) -> TypingSummary {
+    var a = 0, k = 0, p = 0
+    query("SELECT COALESCE(SUM(active_ms),0), COALESCE(SUM(keys),0), COALESCE(MAX(peak_kpm),0) FROM typing"
+          + since(sinceHour) + ";") {
+      a = Int(sqlite3_column_int64($0, 0)); k = Int(sqlite3_column_int64($0, 1)); p = Int(sqlite3_column_int64($0, 2))
+    }
+    return TypingSummary(activeMs: a, keys: k, peakKpm: p)
   }
 
   /// キーボード種別ごとの打鍵数(降順)。kbtype は kCGKeyboardEventKeyboardType。

@@ -21,6 +21,35 @@ nonisolated(unsafe) var downMods: Set<Int> = []   // 押しっぱなし中の修
   globalStore?.bump(hour: hour, keycode: keycode, app: app)
 }
 
+// 入力速度の計測用。連続打鍵の間隔で速度を測る。
+let activeGapMax = 2.0                     // これ以上空いたら「入力中」でない(考え中/離席)
+let peakWindow = 5.0                       // ピーク算出の移動窓(秒)
+let peakMinKeys = 5                        // ピークとみなす最小打鍵数(単発の速さをノイズ除外)
+let correctionKeys: Set<Int> = [51, 117]   // Delete/Backspace/前方削除は速度に含めない(修正打鍵)
+nonisolated(unsafe) var lastKeyTime: Double = 0
+nonisolated(unsafe) var recentKeyTimes: [Double] = []   // 移動窓に入る直近の打鍵時刻
+
+// 前打鍵からの間隔を「アクティブ打鍵時間」として積み、移動窓でピークKPMを算出。
+// 修正打鍵(Delete)は除外 = 打ち間違いの分だけ速く見えるのを防ぐ。
+@inline(__always) func recordTyping(_ keycode: Int) {
+  guard !correctionKeys.contains(keycode) else { return }
+  let now = Date().timeIntervalSince1970
+  let gap = now - lastKeyTime
+  defer { lastKeyTime = now }
+  guard lastKeyTime > 0, gap > 0, gap < activeGapMax else {
+    recentKeyTimes = [now]                 // 初回 or 長い間 → 窓をリセット
+    return
+  }
+  recentKeyTimes.append(now)
+  let cutoff = now - peakWindow
+  while let first = recentKeyTimes.first, first < cutoff { recentKeyTimes.removeFirst() }
+  var peakKpm = 0
+  if recentKeyTimes.count >= peakMinKeys, let first = recentKeyTimes.first, now - first > 0 {
+    peakKpm = Int(Double(recentKeyTimes.count) / (now - first) * 60)
+  }
+  globalStore?.bumpTyping(hour: Int(now) / 3600, activeMs: Int(gap * 1000), peakKpm: peakKpm)
+}
+
 // ⌘/⌃/⌥/fn のいずれかを伴う打鍵を「組み合わせ」として記録(Shift単独は除外)。
 @inline(__always) func recordComboIfNeeded(_ keycode: Int, _ flags: CGEventFlags) {
   let shortcutMods: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskSecondaryFn]
@@ -83,6 +112,7 @@ func runDaemon() {
       if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
         let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
         recordKey(kc)                              // 物理キーとしても数える
+        recordTyping(kc)                           // 入力速度(連続打鍵の間隔)。Delete は除外
         recordComboIfNeeded(kc, event.flags)       // 修飾付きなら組み合わせも記録
         // キーボード種別(内蔵/外付けの区別)
         let kbt = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
@@ -163,6 +193,20 @@ func showCombos(limit: Int) {
   }
 }
 
+func showSpeed() {
+  let store = Store()
+  let t = store.typingSummary()
+  let pk = store.perKey()
+  let del = (pk[51] ?? 0) + (pk[117] ?? 0)          // Delete/Backspace + 前方削除
+  let total = pk.values.reduce(0, +)
+  let rate = total > 0 ? Double(del) / Double(total) * 100 : 0
+  print("入力速度")
+  print(String(format: "  平均      : %d KPM (フロー中)", t.avgKpm))
+  print(String(format: "  ピーク    : %d KPM (最速バースト)", t.peakKpm))
+  print(String(format: "  実打鍵時間: %d 分", t.activeSeconds / 60))
+  print(String(format: "  修正率    : %.1f%% (削除%d / 総%d 打鍵)", rate, del, total))
+}
+
 // MARK: - entry
 
 let args = CommandLine.arguments
@@ -171,6 +215,7 @@ case "run":    runDaemon()
 case "top":    showTop(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
 case "apps":   showApps()
 case "combos": showCombos(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
+case "speed":  showSpeed()
 case "where":  print(Paths.dbPath)
 default:
   print("""
@@ -179,6 +224,7 @@ default:
       keystats top [N]   キー別トップN
       keystats apps      アプリ別打鍵数
       keystats combos [N] 組み合わせキー(ショートカット)トップN
+      keystats speed     入力速度(平均/ピークKPM・実打鍵時間・修正率)
       keystats where     DBパス表示
     GUI は keystats-gui (別バイナリ / Keystats.app)
     """)

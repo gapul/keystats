@@ -302,6 +302,7 @@ final class Model: ObservableObject {
   @Published var weekday: [[Int]] = Array(repeating: Array(repeating: 0, count: 24), count: 7)
   @Published var topKeys: [(Int, Int)] = []
   @Published var kbTypes: [(Int, Int)] = []
+  @Published var typing = TypingSummary(activeMs: 0, keys: 0, peakKpm: 0)
 
   private let s = Store()   // 接続を使い回す(毎回開くと fd リークで枯渇→GUIが落ちる)
 
@@ -322,11 +323,16 @@ final class Model: ObservableObject {
     weekday = s.weekdayHour(offsetHours: off, sinceHour: sh)
     topKeys = s.topKeys(12, sinceHour: sh)
     kbTypes = s.perKbType(sinceHour: sh)
+    typing = s.typingSummary(sinceHour: sh)
   }
 
   var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
   var topAppName: String { apps.first.map { shortApp($0.app) } ?? "—" }
   var distinctKeys: Int { perKey.values.filter { $0 > 0 }.count }
+  // 修正打鍵(Delete/Backspace + 前方削除)。入力テキストは記録しないので打ち間違いの近似。
+  var deletes: Int { (perKey[51] ?? 0) + (perKey[117] ?? 0) }
+  var periodTotal: Int { perKey.values.reduce(0, +) }
+  var correctionRate: Double { periodTotal > 0 ? Double(deletes) / Double(periodTotal) * 100 : 0 }
 }
 
 func fmtDuration(_ seconds: Int) -> String {
@@ -369,6 +375,14 @@ struct DashboardView: View {
                    sub: "\(model.hourly[model.peakHour].formatted()) 打鍵")
           StatCard(label: "よく使うアプリ", value: model.topAppName,
                    sub: "\(model.distinctKeys) 種のキー")
+        }
+        // 入力速度・精度(期間フィルタに追従)。速度は Delete を除外して算出。
+        HStack(spacing: 12) {
+          StatCard(label: "平均速度", value: "\(model.typing.avgKpm)", sub: "KPM · フロー中", accent: true)
+          StatCard(label: "ピーク速度", value: "\(model.typing.peakKpm)", sub: "KPM · 最速バースト")
+          StatCard(label: "実打鍵時間", value: fmtDuration(model.typing.activeSeconds), sub: "実際に叩いた時間")
+          StatCard(label: "修正率", value: String(format: "%.1f%%", model.correctionRate),
+                   sub: "\(model.deletes.formatted()) 回削除")
         }
         Card(title: "キーボードヒートマップ", icon: "keyboard") {
           Keyboard(perKey: model.perKey, maxKey: model.maxKey)
