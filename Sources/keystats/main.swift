@@ -142,11 +142,7 @@ func runDaemon() {
     callback: callback,
     userInfo: Unmanaged.passUnretained(box).toOpaque()
   ) else {
-    FileHandle.standardError.write("""
-      イベントタップを作れませんでした。
-      システム設定 > プライバシーとセキュリティ > 入力監視 で keystats を許可してください。
-      許可後にもう一度起動してください。\n
-      """.data(using: .utf8)!)
+    FileHandle.standardError.write(L10n.t("daemon.tapErr").data(using: .utf8)!)
     exit(2)
   }
   box.port = tap
@@ -159,7 +155,7 @@ func runDaemon() {
   let appTimer = Timer(timeInterval: appTimeInterval, repeats: true) { _ in recordAppTime() }
   RunLoop.current.add(appTimer, forMode: .common)
 
-  FileHandle.standardError.write("keystats: 記録開始 (\(Paths.dbPath))\n".data(using: .utf8)!)
+  FileHandle.standardError.write(L10n.t("daemon.start", Paths.dbPath).data(using: .utf8)!)
   CFRunLoopRun()
 }
 
@@ -168,8 +164,8 @@ func runDaemon() {
 func showTop(limit: Int) {
   let store = Store()
   let total = store.total()
-  print("総打鍵数: \(total)\n")
-  print("キー別トップ\(limit):")
+  print(L10n.t("cli.total", total))
+  print(L10n.t("cli.topKeys", limit))
   for (kc, n) in store.topKeys(limit) {
     let pct = total > 0 ? Double(n) / Double(total) * 100 : 0
     let bar = String(repeating: "█", count: min(40, Int(pct / 2)))
@@ -179,7 +175,7 @@ func showTop(limit: Int) {
 
 func showApps() {
   let store = Store()
-  print("アプリ別打鍵数:")
+  print(L10n.t("cli.apps"))
   for a in store.perApp() {
     print(String(format: "  %8d  %@", a.n, a.app as NSString))
   }
@@ -187,7 +183,7 @@ func showApps() {
 
 func showCombos(limit: Int) {
   let store = Store()
-  print("組み合わせキー トップ\(limit):")
+  print(L10n.t("cli.combos", limit))
   for c in store.topCombos(limit) {
     print(String(format: "  %8d  %@", c.n, c.combo as NSString))
   }
@@ -200,11 +196,11 @@ func showSpeed() {
   let del = (pk[51] ?? 0) + (pk[117] ?? 0)          // Delete/Backspace + 前方削除
   let total = pk.values.reduce(0, +)
   let rate = total > 0 ? Double(del) / Double(total) * 100 : 0
-  print("入力速度")
-  print(String(format: "  平均      : %d KPM (フロー中)", t.avgKpm))
-  print(String(format: "  ピーク    : %d KPM (最速バースト)", t.peakKpm))
-  print(String(format: "  実打鍵時間: %d 分", t.activeSeconds / 60))
-  print(String(format: "  修正率    : %.1f%% (削除%d / 総%d 打鍵)", rate, del, total))
+  print(L10n.t("cli.speed.title"))
+  print(L10n.t("cli.speed.avg", t.avgKpm))
+  print(L10n.t("cli.speed.peak", t.peakKpm))
+  print(L10n.t("cli.speed.active", t.activeSeconds / 60))
+  print(L10n.t("cli.speed.correction", rate, del, total))
 }
 
 // MARK: - entry
@@ -218,14 +214,5 @@ case "combos": showCombos(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
 case "speed":  showSpeed()
 case "where":  print(Paths.dbPath)
 default:
-  print("""
-    keystats — 打鍵ヒートマップ収集
-      keystats run       常駐して記録 (デフォルト)
-      keystats top [N]   キー別トップN
-      keystats apps      アプリ別打鍵数
-      keystats combos [N] 組み合わせキー(ショートカット)トップN
-      keystats speed     入力速度(平均/ピークKPM・実打鍵時間・修正率)
-      keystats where     DBパス表示
-    GUI は keystats-gui (別バイナリ / Keystats.app)
-    """)
+  print(L10n.t("cli.usage"))
 }

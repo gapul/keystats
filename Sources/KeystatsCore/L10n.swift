@@ -1,0 +1,171 @@
+import Foundation
+
+// keystats の多言語化。外部依存なしの軽量辞書方式(CLI/GUI 共通)。
+// 言語は「保存された選択 > 環境変数/システム言語 > en」の順で決まる。
+// GUI はメニューから手動切替(UserDefaults 保存)、CLI は LANG などのロケールに追従。
+
+public enum Lang: String, CaseIterable, Sendable {
+  case ja, en
+  public var displayName: String { self == .ja ? "日本語" : "English" }
+}
+
+public enum L10n {
+  private static let key = "lang"
+
+  /// 現在の言語。プロセス起動時に解決し、GUI の切替で更新する。
+  nonisolated(unsafe) public static var current: Lang = resolve()
+
+  /// 保存された選択があればそれを、無ければシステム言語を返す。
+  public static func resolve() -> Lang {
+    if let saved = UserDefaults.standard.string(forKey: key), let l = Lang(rawValue: saved) { return l }
+    return systemLang()
+  }
+
+  /// 環境変数(KEYSTATS_LANG/LC_ALL/LC_MESSAGES/LANG)→ ロケール優先言語 の順で判定。
+  public static func systemLang() -> Lang {
+    let env = ProcessInfo.processInfo.environment
+    for k in ["KEYSTATS_LANG", "LC_ALL", "LC_MESSAGES", "LANG"] {
+      if let v = env[k]?.lowercased(), !v.isEmpty {
+        if v.hasPrefix("ja") { return .ja }
+        if v.hasPrefix("en") { return .en }
+      }
+    }
+    if let code = Locale.preferredLanguages.first?.lowercased(), code.hasPrefix("ja") { return .ja }
+    return .en
+  }
+
+  /// 言語を切り替えて保存(GUI 用)。
+  public static func set(_ lang: Lang) {
+    current = lang
+    UserDefaults.standard.set(lang.rawValue, forKey: key)
+  }
+
+  /// キーから現在言語の文字列を引く。未定義は en → キーそのものにフォールバック。
+  public static func t(_ k: String) -> String {
+    guard let entry = table[k] else { return k }
+    return entry[current] ?? entry[.en] ?? k
+  }
+
+  /// フォーマット文字列版(%d / %@ / %.1f など)。
+  public static func t(_ k: String, _ args: CVarArg...) -> String {
+    String(format: t(k), arguments: args)
+  }
+
+  /// 曜日ラベル(日曜始まり)。
+  public static var weekdays: [String] {
+    current == .ja ? ["日", "月", "火", "水", "木", "金", "土"]
+                   : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+  }
+
+  // MARK: - 辞書本体
+
+  static let table: [String: [Lang: String]] = [
+    // --- CLI ---
+    "cli.total":            [.ja: "総打鍵数: %d\n",              .en: "Total keystrokes: %d\n"],
+    "cli.topKeys":          [.ja: "キー別トップ%d:",            .en: "Top %d keys:"],
+    "cli.apps":             [.ja: "アプリ別打鍵数:",            .en: "Keystrokes by app:"],
+    "cli.combos":           [.ja: "組み合わせキー トップ%d:",   .en: "Top %d shortcuts:"],
+    "cli.speed.title":      [.ja: "入力速度",                   .en: "Typing speed"],
+    "cli.speed.avg":        [.ja: "  平均      : %d KPM (フロー中)",     .en: "  Average : %d KPM (in flow)"],
+    "cli.speed.peak":       [.ja: "  ピーク    : %d KPM (最速バースト)", .en: "  Peak    : %d KPM (fastest burst)"],
+    "cli.speed.active":     [.ja: "  実打鍵時間: %d 分",                 .en: "  Active  : %d min"],
+    "cli.speed.correction": [.ja: "  修正率    : %.1f%% (削除%d / 総%d 打鍵)",
+                             .en: "  Correct : %.1f%% (%d deletes / %d total)"],
+    "cli.usage": [
+      .ja: """
+        keystats — 打鍵ヒートマップ収集
+          keystats run       常駐して記録 (デフォルト)
+          keystats top [N]   キー別トップN
+          keystats apps      アプリ別打鍵数
+          keystats combos [N] 組み合わせキー(ショートカット)トップN
+          keystats speed     入力速度(平均/ピークKPM・実打鍵時間・修正率)
+          keystats where     DBパス表示
+        GUI は keystats-gui (別バイナリ / Keystats.app)
+        """,
+      .en: """
+        keystats — keystroke heatmap collector
+          keystats run       run in background and record (default)
+          keystats top [N]   top N keys
+          keystats apps      keystrokes by app
+          keystats combos [N] top N shortcuts
+          keystats speed     typing speed (avg/peak KPM, active time, correction rate)
+          keystats where     show DB path
+        GUI is keystats-gui (separate binary / Keystats.app)
+        """],
+
+    // --- daemon ---
+    "daemon.start":  [.ja: "keystats: 記録開始 (%@)\n", .en: "keystats: recording started (%@)\n"],
+    "daemon.tapErr": [
+      .ja: """
+        イベントタップを作れませんでした。
+        システム設定 > プライバシーとセキュリティ > 入力監視 で keystats を許可してください。
+        許可後にもう一度起動してください。\n
+        """,
+      .en: """
+        Failed to create the event tap.
+        Allow keystats in System Settings > Privacy & Security > Input Monitoring,
+        then launch it again.\n
+        """],
+    "db.openFail": [.ja: "DBを開けない: %@\n", .en: "Cannot open DB: %@\n"],
+
+    // --- GUI: header / controls ---
+    "app.subtitle": [.ja: "打鍵アナリティクス", .en: "Keystroke analytics"],
+    "live.on":      [.ja: "ライブ",   .en: "Live"],
+    "live.off":     [.ja: "停止中",   .en: "Paused"],
+    "period.today": [.ja: "今日",     .en: "Today"],
+    "period.week":  [.ja: "今週",     .en: "This week"],
+    "period.all":   [.ja: "全期間",   .en: "All time"],
+
+    // --- GUI: stat cards ---
+    "stat.total":        [.ja: "総打鍵数",       .en: "Total"],
+    "stat.today":        [.ja: "今日",           .en: "Today"],
+    "stat.peakHour":     [.ja: "ピーク時間帯",   .en: "Peak hour"],
+    "stat.topApp":       [.ja: "よく使うアプリ", .en: "Top app"],
+    "stat.avgSpeed":     [.ja: "平均速度",       .en: "Avg speed"],
+    "stat.peakSpeed":    [.ja: "ピーク速度",     .en: "Peak speed"],
+    "stat.activeTyping": [.ja: "実打鍵時間",     .en: "Active typing"],
+    "stat.correction":   [.ja: "修正率",         .en: "Correction"],
+    "sub.ofTotal":       [.ja: "全体の%@",       .en: "%@ of total"],
+    "sub.hourKeys":      [.ja: "%@ 打鍵",        .en: "%@ keys"],
+    "sub.distinctKeys":  [.ja: "%d 種のキー",    .en: "%d distinct keys"],
+    "sub.kpmFlow":       [.ja: "KPM · フロー中", .en: "KPM · in flow"],
+    "sub.kpmPeak":       [.ja: "KPM · 最速バースト", .en: "KPM · fastest burst"],
+    "sub.activeReal":    [.ja: "実際に叩いた時間",   .en: "actual typing time"],
+    "sub.deletes":       [.ja: "%@ 回削除",      .en: "%@ deletes"],
+    "hour.fmt":          [.ja: "%d時",           .en: "%d:00"],
+
+    // --- GUI: card titles ---
+    "card.heatmap": [.ja: "キーボードヒートマップ", .en: "Keyboard heatmap"],
+    "card.hourly":  [.ja: "時間帯別",              .en: "By hour"],
+    "card.daily":   [.ja: "日別トレンド(14日)",    .en: "Daily trend (14d)"],
+    "card.weekday": [.ja: "曜日 × 時間帯",         .en: "Weekday × hour"],
+    "card.topKeys": [.ja: "よく押すキー",          .en: "Top keys"],
+    "card.combos":  [.ja: "組み合わせキー",        .en: "Shortcuts"],
+    "card.appKeys": [.ja: "アプリ別打鍵数",        .en: "Keystrokes by app"],
+    "card.appTime": [.ja: "アプリ稼働時間",        .en: "App active time"],
+    "card.kbType":  [.ja: "キーボード別",          .en: "By keyboard"],
+
+    "empty":       [.ja: "まだ記録なし",        .en: "No data yet"],
+    "kb.builtin":  [.ja: "内蔵/Apple (%d)",     .en: "Built-in/Apple (%d)"],
+    "kb.external": [.ja: "外付け (%d)",         .en: "External (%d)"],
+
+    // --- GUI: menu ---
+    "menu.open":         [.ja: "ダッシュボードを開く", .en: "Open dashboard"],
+    "menu.checkUpdate":  [.ja: "アップデートを確認",   .en: "Check for updates"],
+    "menu.autoUpdate":   [.ja: "自動アップデート",     .en: "Auto-update"],
+    "menu.language":     [.ja: "言語",                 .en: "Language"],
+    "menu.quit":         [.ja: "keystats を終了",      .en: "Quit keystats"],
+
+    // --- GUI: alerts ---
+    "alert.ok":              [.ja: "OK",       .en: "OK"],
+    "alert.later":           [.ja: "あとで",   .en: "Later"],
+    "update.checkFail":      [.ja: "更新確認に失敗",           .en: "Update check failed"],
+    "update.available":      [.ja: "新しいバージョンがあります", .en: "A new version is available"],
+    "update.availableBody":  [.ja: "最新版に更新できます。",     .en: "You can update to the latest version."],
+    "update.now":            [.ja: "今すぐ更新",               .en: "Update now"],
+    "update.updatingTitle":  [.ja: "アップデート中",           .en: "Updating"],
+    "update.updatingBody":   [.ja: "バックグラウンドで更新します。完了すると通知が出ます。",
+                              .en: "Updating in the background. You'll be notified when done."],
+    "update.latest":         [.ja: "最新版です。",             .en: "You're on the latest version."],
+  ]
+}

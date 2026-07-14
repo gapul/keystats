@@ -126,7 +126,7 @@ struct BarList: View {
     let maxN = max(rows.first?.n ?? 1, 1)
     VStack(spacing: 7) {
       if rows.isEmpty {
-        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(Theme.sub)
+        Text(L10n.t("empty")).font(.system(size: 12)).foregroundStyle(Theme.sub)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
       ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
@@ -224,7 +224,7 @@ struct DailyTrend: View {           // 日別トレンド(直近)
     let maxN = max(daily.map { $0.n }.max() ?? 1, 1)
     HStack(alignment: .bottom, spacing: 5) {
       if daily.isEmpty {
-        Text("まだ記録なし").font(.system(size: 12)).foregroundStyle(Theme.sub)
+        Text(L10n.t("empty")).font(.system(size: 12)).foregroundStyle(Theme.sub)
       }
       ForEach(Array(daily.enumerated()), id: \.offset) { i, d in
         VStack(spacing: 4) {
@@ -242,7 +242,7 @@ struct DailyTrend: View {           // 日別トレンド(直近)
 
 struct WeekdayHeatmap: View {       // 曜日 × 時間帯
   let grid: [[Int]]                 // [7][24]
-  private let days = ["日", "月", "火", "水", "木", "金", "土"]
+  private var days: [String] { L10n.weekdays }
   var body: some View {
     let maxN = max(grid.flatMap { $0 }.max() ?? 1, 1)
     VStack(spacing: 2) {
@@ -273,8 +273,15 @@ struct WeekdayHeatmap: View {       // 曜日 × 時間帯
 // MARK: - データ
 
 enum Period: String, CaseIterable, Identifiable {
-  case today = "今日", week = "今週", all = "全期間"
+  case today, week, all
   var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .today: return L10n.t("period.today")
+    case .week:  return L10n.t("period.week")
+    case .all:   return L10n.t("period.all")
+    }
+  }
   var sinceHour: Int {
     let cal = Calendar.current
     switch self {
@@ -345,15 +352,24 @@ func fmtDuration(_ seconds: Int) -> String {
 func kbTypeLabel(_ t: Int) -> String {
   // 代表的な内蔵キーボードの keyboardType。厳密でないので概ねの目安。
   switch t {
-  case 40, 41, 42, 43, 44, 45, 46, 47: return "内蔵/Apple (\(t))"
-  default: return "外付け (\(t))"
+  case 40, 41, 42, 43, 44, 45, 46, 47: return L10n.t("kb.builtin", t)
+  default: return L10n.t("kb.external", t)
   }
+}
+
+// 言語などのアプリ全体設定。切替で SwiftUI を再描画するため ObservableObject。
+@MainActor
+final class AppSettings: ObservableObject {
+  static let shared = AppSettings()
+  @Published var lang: Lang = L10n.current
+  func setLang(_ l: Lang) { L10n.set(l); lang = l }
 }
 
 // MARK: - ダッシュボード
 
 struct DashboardView: View {
   @StateObject var model = Model()
+  @ObservedObject var settings = AppSettings.shared   // 言語切替を監視して再描画
   @State private var live = true
   private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -363,58 +379,59 @@ struct DashboardView: View {
         header
         // 期間フィルタ(分析カードに反映)
         Picker("", selection: $model.period) {
-          ForEach(Period.allCases) { Text($0.rawValue).tag($0) }
+          ForEach(Period.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 280)
         // 統計カード(総数・今日は常に全期間基準)
         HStack(spacing: 12) {
-          StatCard(label: "総打鍵数", value: model.total.formatted(), accent: true)
-          StatCard(label: "今日", value: model.today.formatted(),
-                   sub: model.total > 0 ? "全体の\(pct(model.today, model.total))" : nil)
-          StatCard(label: "ピーク時間帯", value: "\(model.peakHour)時",
-                   sub: "\(model.hourly[model.peakHour].formatted()) 打鍵")
-          StatCard(label: "よく使うアプリ", value: model.topAppName,
-                   sub: "\(model.distinctKeys) 種のキー")
+          StatCard(label: L10n.t("stat.total"), value: model.total.formatted(), accent: true)
+          StatCard(label: L10n.t("stat.today"), value: model.today.formatted(),
+                   sub: model.total > 0 ? L10n.t("sub.ofTotal", pct(model.today, model.total)) : nil)
+          StatCard(label: L10n.t("stat.peakHour"), value: L10n.t("hour.fmt", model.peakHour),
+                   sub: L10n.t("sub.hourKeys", model.hourly[model.peakHour].formatted()))
+          StatCard(label: L10n.t("stat.topApp"), value: model.topAppName,
+                   sub: L10n.t("sub.distinctKeys", model.distinctKeys))
         }
         // 入力速度・精度(期間フィルタに追従)。速度は Delete を除外して算出。
         HStack(spacing: 12) {
-          StatCard(label: "平均速度", value: "\(model.typing.avgKpm)", sub: "KPM · フロー中", accent: true)
-          StatCard(label: "ピーク速度", value: "\(model.typing.peakKpm)", sub: "KPM · 最速バースト")
-          StatCard(label: "実打鍵時間", value: fmtDuration(model.typing.activeSeconds), sub: "実際に叩いた時間")
-          StatCard(label: "修正率", value: String(format: "%.1f%%", model.correctionRate),
-                   sub: "\(model.deletes.formatted()) 回削除")
+          StatCard(label: L10n.t("stat.avgSpeed"), value: "\(model.typing.avgKpm)", sub: L10n.t("sub.kpmFlow"), accent: true)
+          StatCard(label: L10n.t("stat.peakSpeed"), value: "\(model.typing.peakKpm)", sub: L10n.t("sub.kpmPeak"))
+          StatCard(label: L10n.t("stat.activeTyping"), value: fmtDuration(model.typing.activeSeconds), sub: L10n.t("sub.activeReal"))
+          StatCard(label: L10n.t("stat.correction"), value: String(format: "%.1f%%", model.correctionRate),
+                   sub: L10n.t("sub.deletes", model.deletes.formatted()))
         }
-        Card(title: "キーボードヒートマップ", icon: "keyboard") {
+        Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
           Keyboard(perKey: model.perKey, maxKey: model.maxKey)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: "時間帯別", icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
-          Card(title: "日別トレンド(14日)", icon: "chart.bar") { DailyTrend(daily: model.daily) }
+          Card(title: L10n.t("card.hourly"), icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
+          Card(title: L10n.t("card.daily"), icon: "chart.bar") { DailyTrend(daily: model.daily) }
         }
-        Card(title: "曜日 × 時間帯", icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
+        Card(title: L10n.t("card.weekday"), icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: "よく押すキー", icon: "trophy") {
+          Card(title: L10n.t("card.topKeys"), icon: "trophy") {
             BarList(rows: model.topKeys.map { (label($0.0), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true)
           }
-          Card(title: "組み合わせキー", icon: "command") {
+          Card(title: L10n.t("card.combos"), icon: "command") {
             BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
           }
         }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: "アプリ別打鍵数", icon: "app.badge") {
+          Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
             BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150)
           }
-          Card(title: "アプリ稼働時間", icon: "hourglass") {
+          Card(title: L10n.t("card.appTime"), icon: "hourglass") {
             BarList(rows: model.appTime.prefix(12).map { (label: shortApp($0.app), n: $0.n) },
                     color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration)
           }
         }
-        Card(title: "キーボード別", icon: "keyboard.badge.ellipsis") {
+        Card(title: L10n.t("card.kbType"), icon: "keyboard.badge.ellipsis") {
           BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150)
         }
       }
       .padding(20)
+      .id(settings.lang)          // 言語切替で全再構築 → 全ラベルを即更新
     }
     .background(Theme.bg)
     .frame(minWidth: 900, minHeight: 720)
@@ -427,7 +444,7 @@ struct DashboardView: View {
       Image(systemName: "keyboard.fill").foregroundStyle(Theme.accent).font(.system(size: 20))
       VStack(alignment: .leading, spacing: 1) {
         Text("keystats").font(.system(size: 22, weight: .bold))
-        Text("打鍵アナリティクス").font(.system(size: 11)).foregroundStyle(Theme.sub)
+        Text(L10n.t("app.subtitle")).font(.system(size: 11)).foregroundStyle(Theme.sub)
       }
       Spacer()
       Button {
@@ -435,7 +452,7 @@ struct DashboardView: View {
       } label: {
         HStack(spacing: 5) {
           Circle().fill(live ? Color.green : Theme.sub).frame(width: 7, height: 7)
-          Text(live ? "ライブ" : "停止中").font(.system(size: 12, weight: .medium))
+          Text(live ? L10n.t("live.on") : L10n.t("live.off")).font(.system(size: 12, weight: .medium))
         }
       }.buttonStyle(.bordered)
       Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
@@ -480,15 +497,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       b.image = img
       b.imagePosition = .imageLeading
     }
+    statusItem.menu = buildMenu()
+  }
+
+  // メニューは言語切替で作り直す(項目ラベルを更新するため)。
+  private func buildMenu() -> NSMenu {
     let menu = NSMenu()
-    menu.addItem(withTitle: "ダッシュボードを開く", action: #selector(showWindow), keyEquivalent: "")
-    menu.addItem(withTitle: "アップデートを確認", action: #selector(checkUpdate), keyEquivalent: "")
-    let auto = NSMenuItem(title: "自動アップデート", action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
+    menu.addItem(withTitle: L10n.t("menu.open"), action: #selector(showWindow), keyEquivalent: "")
+    menu.addItem(withTitle: L10n.t("menu.checkUpdate"), action: #selector(checkUpdate), keyEquivalent: "")
+    let auto = NSMenuItem(title: L10n.t("menu.autoUpdate"), action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
     auto.state = autoUpdateEnabled ? .on : .off
     menu.addItem(auto)
+    // 言語サブメニュー(自動判定 + 手動切替)
+    let langItem = NSMenuItem(title: L10n.t("menu.language"), action: nil, keyEquivalent: "")
+    let langMenu = NSMenu()
+    for lang in Lang.allCases {
+      let it = NSMenuItem(title: lang.displayName, action: #selector(selectLang(_:)), keyEquivalent: "")
+      it.representedObject = lang.rawValue
+      it.state = (lang == L10n.current) ? .on : .off
+      langMenu.addItem(it)
+    }
+    langItem.submenu = langMenu
+    menu.addItem(langItem)
     menu.addItem(.separator())
-    menu.addItem(withTitle: "keystats を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-    statusItem.menu = menu
+    menu.addItem(withTitle: L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    return menu
+  }
+
+  @objc func selectLang(_ sender: NSMenuItem) {
+    guard let raw = sender.representedObject as? String, let lang = Lang(rawValue: raw) else { return }
+    AppSettings.shared.setLang(lang)   // L10n.current 更新 + GUI 再描画
+    statusItem.menu = buildMenu()      // メニュー自身も再構築(ラベル/チェック更新)
   }
 
   private func setupWindow() {
@@ -517,16 +556,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
     NSApp.activate(ignoringOtherApps: true)
     do { try p.run() } catch {
-      alert("更新確認に失敗", "\(error.localizedDescription)"); return
+      alert(L10n.t("update.checkFail"), "\(error.localizedDescription)"); return
     }
     p.waitUntilExit()
     let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if p.terminationStatus == 10 {         // 更新あり
       let a = NSAlert()
-      a.messageText = "新しいバージョンがあります"
-      a.informativeText = out.isEmpty ? "最新版に更新できます。" : out
-      a.addButton(withTitle: "今すぐ更新"); a.addButton(withTitle: "あとで")
+      a.messageText = L10n.t("update.available")
+      a.informativeText = out.isEmpty ? L10n.t("update.availableBody") : out
+      a.addButton(withTitle: L10n.t("update.now")); a.addButton(withTitle: L10n.t("alert.later"))
       if a.runModal() == .alertFirstButtonReturn {
         // launchd 経由で更新(GUIが再起動されても完走する)。無効化中でも一時的にロードして実行。
         let uid = getuid()
@@ -536,16 +575,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           launchctl(["bootstrap", "gui/\(uid)", url.path])
         }
         launchctl(["kickstart", "-k", "gui/\(uid)/net.gapul.keystats.update"])
-        alert("アップデート中", "バックグラウンドで更新します。完了すると通知が出ます。")
+        alert(L10n.t("update.updatingTitle"), L10n.t("update.updatingBody"))
       }
     } else {
-      alert("keystats", out.isEmpty ? "最新版です。" : out)
+      alert("keystats", out.isEmpty ? L10n.t("update.latest") : out)
     }
   }
 
   private func alert(_ title: String, _ body: String) {
     let a = NSAlert(); a.messageText = title; a.informativeText = body
-    a.addButton(withTitle: "OK"); a.runModal()
+    a.addButton(withTitle: L10n.t("alert.ok")); a.runModal()
   }
 
   // MARK: 設定(UserDefaults)

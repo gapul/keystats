@@ -69,7 +69,7 @@ public final class Store {
 
   public init(path: String = Paths.dbPath) {
     guard sqlite3_open(path, &handle) == SQLITE_OK else {
-      FileHandle.standardError.write("DBを開けない: \(path)\n".data(using: .utf8)!)
+      FileHandle.standardError.write(L10n.t("db.openFail", path).data(using: .utf8)!)
       exit(1)
     }
     exec("PRAGMA journal_mode=WAL;")
