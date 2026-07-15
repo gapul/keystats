@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Carbon                 // KBGetLayoutType(実キーボードの ANSI/ISO/JIS 判定)
 import KeystatsCore
 
 // keystats-gui — SQLite を読んで打鍵ヒートマップ＋アプリ別打鍵数を表示する SwiftUI ウィンドウ。
@@ -165,6 +166,7 @@ struct BarList: View {
   var labelWidth: CGFloat = 116
   var rounded = false
   var valueFmt: (Int) -> String = { "\($0)" }
+  var onTap: ((Int) -> Void)? = nil     // 行タップ(index を渡す)
   var body: some View {
     let maxN = max(rows.first?.n ?? 1, 1)
     VStack(spacing: 7) {
@@ -172,7 +174,7 @@ struct BarList: View {
         Text(L10n.t("empty")).font(.system(size: 12)).foregroundStyle(Theme.sub)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+      ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
         HStack(spacing: 10) {
           Text(r.label)
             .font(.system(size: 12, weight: rounded ? .semibold : .regular, design: rounded ? .rounded : .default))
@@ -187,6 +189,8 @@ struct BarList: View {
           Text(valueFmt(r.n)).font(.system(size: 11, design: .monospaced))
             .foregroundStyle(Theme.sub).frame(width: 56, alignment: .trailing)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { onTap?(i) }
       }
     }
   }
@@ -200,6 +204,7 @@ struct KeyCap: View {
   let maxKey: Int
   var jis = false
   var tall: CGFloat? = nil          // ISO型 Enter など縦長キー用の高さ上書き
+  var onTap: (() -> Void)? = nil
   static let unit: CGFloat = 46
   static let h: CGFloat = 42
   static let gap: CGFloat = 4       // 行/キー間スペース(レイアウト計算にも使う)
@@ -215,6 +220,8 @@ struct KeyCap: View {
     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
       .strokeBorder(Theme.border.opacity(n > 0 ? 0 : 1), lineWidth: 1))
+    .contentShape(Rectangle())
+    .onTapGesture { onTap?() }
   }
   private var keyFg: Color {
     // 色付きセルは常に黒文字(明るいヒート色なので黒が読みやすい)。ゼロは控えめグレー。
@@ -227,12 +234,13 @@ struct Keyboard: View {
   let maxKey: Int
   let layout: [[KeyDef]]
   let jis: Bool
+  var onTapKey: ((Int) -> Void)? = nil
   var body: some View {
     VStack(alignment: .leading, spacing: KeyCap.gap) {
       ForEach(Array(layout.enumerated()), id: \.offset) { _, row in
         HStack(spacing: KeyCap.gap) {
           ForEach(Array(row.enumerated()), id: \.offset) { _, k in
-            KeyCap(def: k, n: perKey[k.kc] ?? 0, maxKey: maxKey, jis: jis)
+            KeyCap(def: k, n: perKey[k.kc] ?? 0, maxKey: maxKey, jis: jis, onTap: { onTapKey?(k.kc) })
           }
         }
       }
@@ -241,7 +249,8 @@ struct Keyboard: View {
     .overlay(alignment: .topLeading) {
       if jis {
         let U = KeyCap.unit, H = KeyCap.h, G = KeyCap.gap
-        KeyCap(def: KeyDef(kc: 36, w: 1.3), n: perKey[36] ?? 0, maxKey: maxKey, jis: true, tall: 2 * H + G)
+        KeyCap(def: KeyDef(kc: 36, w: 1.3), n: perKey[36] ?? 0, maxKey: maxKey, jis: true, tall: 2 * H + G,
+               onTap: { onTapKey?(36) })
           .offset(x: 13.6 * U + 13 * G, y: 2 * (H + G))   // ホーム段の右端・QWERTY段の高さから
       }
     }
@@ -367,6 +376,8 @@ final class Model: ObservableObject {
   @Published var kbTypes: [(Int, Int)] = []
   @Published var typing = TypingSummary(activeMs: 0, keys: 0, peakKpm: 0)
   @Published var hasJISKeys = false   // データに JIS 専用キーの打鍵があるか(配列自動判定用)
+  @Published var corrections = 0      // 修正打鍵(削除 + ⌘Z + ⌃H)
+  @Published var weakKeys: [(kc: Int, rate: Double, weight: Double)] = []   // 苦手キー(修正直前率 降順)
 
   private let s = Store()   // 接続を使い回す(毎回開くと fd リークで枯渇→GUIが落ちる)
 
@@ -389,15 +400,33 @@ final class Model: ObservableObject {
     kbTypes = s.perKbType(sinceHour: sh)
     typing = s.typingSummary(sinceHour: sh)
     hasJISKeys = s.hasJISKeys()
+    // 修正: Backspace/前方削除 + 取り消し(⌘Z)/Emacs風削除(⌃H)
+    corrections = (pk[51] ?? 0) + (pk[117] ?? 0) + s.comboCount(Self.correctionCombos, sinceHour: sh)
+    // 苦手キー: 修正直前の重み / 総打鍵。打鍵の少ないキーはノイズ除外(閾値30)。
+    weakKeys = s.mistypeCounts(sinceHour: sh).compactMap { (kc, w) -> (Int, Double, Double)? in
+      let total = pk[kc] ?? 0
+      guard total >= 30 else { return nil }
+      return (kc, w / Double(total) * 100, w)
+    }.sorted { $0.1 > $1.1 }.prefix(10).map { (kc: $0.0, rate: $0.1, weight: $0.2) }
+  }
+  static let correctionCombos = ["⌘Z", "⌃H"]
+
+  // 実キーボードのレイアウト種別。true=JIS, false=ANSI/ISO, nil=不明/データなし。
+  // KBGetLayoutType は FourCharCode('ANSI'/'ISO '/'JIS ')を返す。
+  var keyboardIsJIS: Bool? {
+    guard let kbtype = kbTypes.first?.0 else { return nil }
+    let lt = KBGetLayoutType(Int16(truncatingIfNeeded: kbtype))
+    if lt == 1_245_773_600 { return true }                     // 'JIS '
+    if lt == 1_095_652_169 || lt == 1_230_262_048 { return false }  // 'ANSI' / 'ISO '
+    return nil
   }
 
   var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
   var topAppName: String { apps.first.map { shortApp($0.app) } ?? "—" }
   var distinctKeys: Int { perKey.values.filter { $0 > 0 }.count }
-  // 修正打鍵(Delete/Backspace + 前方削除)。入力テキストは記録しないので打ち間違いの近似。
-  var deletes: Int { (perKey[51] ?? 0) + (perKey[117] ?? 0) }
+  // 修正率 = 修正打鍵(削除 + ⌘Z + ⌃H) / 総打鍵。入力テキストは記録しないので打ち間違いの近似。
   var periodTotal: Int { perKey.values.reduce(0, +) }
-  var correctionRate: Double { periodTotal > 0 ? Double(deletes) / Double(periodTotal) * 100 : 0 }
+  var correctionRate: Double { periodTotal > 0 ? Double(corrections) / Double(periodTotal) * 100 : 0 }
 }
 
 func fmtDuration(_ seconds: Int) -> String {
@@ -417,6 +446,191 @@ func kbTypeLabel(_ t: Int) -> String {
 
 // キーボード配列の指定。auto=データ/言語から推定、ansi/jis=手動固定。
 enum LayoutPref: String, CaseIterable { case auto, ansi, jis }
+
+// MARK: - ドリルダウン詳細(キー / アプリ / キーボード)
+
+enum DetailTarget: Identifiable, Hashable {
+  case key(Int), app(String), keyboard(Int)
+  var id: String {
+    switch self {
+    case .key(let k): return "k\(k)"; case .app(let a): return "a\(a)"; case .keyboard(let t): return "b\(t)"
+    }
+  }
+}
+
+// 組み合わせラベルから修飾記号を除いたキー部分("⌘⇧C" → "C")。
+func comboKeyPart(_ combo: String) -> String {
+  let mods: Set<Character> = ["⌃", "⌥", "⇧", "⌘"]
+  return String(combo.drop(while: { mods.contains($0) }))
+}
+
+@MainActor
+final class DetailModel: ObservableObject {
+  let target: DetailTarget
+  @Published var period: Period { didSet { load() } }
+  @Published var total = 0
+  @Published var grandTotal = 0
+  @Published var perKey: [Int: Int] = [:]
+  @Published var maxKey = 0
+  @Published var topKeys: [(Int, Int)] = []
+  @Published var apps: [AppCount] = []
+  @Published var combos: [ComboCount] = []
+  @Published var hourly = Array(repeating: 0, count: 24)
+  @Published var weekday = Array(repeating: Array(repeating: 0, count: 24), count: 7)
+  @Published var daily: [DayCount] = []
+  private let s = Store()
+
+  init(target: DetailTarget, period: Period) {
+    self.target = target; self.period = period; load()
+  }
+
+  private var filter: (kc: Int?, app: String?, kbt: Int?) {
+    switch target {
+    case .key(let k): return (k, nil, nil)
+    case .app(let a): return (nil, a, nil)
+    case .keyboard(let t): return (nil, nil, t)
+    }
+  }
+
+  func load() {
+    let off = TimeZone.current.secondsFromGMT() / 3600
+    let sh = period.sinceHour
+    let f = filter
+    grandTotal = s.total()
+    total = s.totalCounts(sinceHour: sh, keycode: f.kc, app: f.app, kbtype: f.kbt)
+    perKey = s.keyCounts(sinceHour: sh, app: f.app, kbtype: f.kbt)
+    maxKey = perKey.values.max() ?? 0
+    topKeys = perKey.sorted { $0.value > $1.value }.prefix(12).map { ($0.key, $0.value) }
+    apps = s.appCounts(sinceHour: sh, keycode: f.kc, kbtype: f.kbt)
+    if case .key(let k) = target {
+      let key = label(k)                              // combos は ANSI ラベルで保存
+      combos = s.allCombos(sinceHour: sh).filter { comboKeyPart($0.combo) == key }
+    } else if case .app(let a) = target {
+      combos = s.allCombos(sinceHour: sh, app: a)
+    } else {
+      combos = []                                     // combos に kbtype 次元は無いのでキーボード別は非表示
+    }
+    hourly = s.hourlyCounts(offsetHours: off, sinceHour: sh, keycode: f.kc, app: f.app, kbtype: f.kbt)
+    weekday = s.weekdayCounts(offsetHours: off, sinceHour: sh, keycode: f.kc, app: f.app, kbtype: f.kbt)
+    daily = s.dailyCounts(days: 14, offsetHours: off, keycode: f.kc, app: f.app, kbtype: f.kbt)
+  }
+
+  var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
+  var pctOfAll: String { grandTotal > 0 ? String(format: "%.1f%%", Double(total) / Double(grandTotal) * 100) : "0%" }
+}
+
+struct DetailView: View {
+  @StateObject private var model: DetailModel
+  @ObservedObject private var settings = AppSettings.shared
+  @Environment(\.dismiss) private var dismiss
+  let useJIS: Bool
+  let onDrill: (DetailTarget) -> Void      // さらに潜る(キー/アプリ)
+
+  init(target: DetailTarget, period: Period, useJIS: Bool, onDrill: @escaping (DetailTarget) -> Void) {
+    _model = StateObject(wrappedValue: DetailModel(target: target, period: period))
+    self.useJIS = useJIS
+    self.onDrill = onDrill
+  }
+
+  private var titleText: String {
+    switch model.target {
+    case .key(let k): return label(k, jis: useJIS)
+    case .app(let a): return shortApp(a)
+    case .keyboard(let t): return kbTypeLabel(t)
+    }
+  }
+  private var titleIcon: String {
+    switch model.target {
+    case .key: return "keyboard"; case .app: return "app.badge"; case .keyboard: return "keyboard.badge.ellipsis"
+    }
+  }
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        header
+        Picker("", selection: $model.period) {
+          ForEach(Period.allCases) { Text($0.title).tag($0) }
+        }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 280)
+        HStack(spacing: 12) {
+          StatCard(label: L10n.t("stat.total"), value: model.total.formatted(), accent: true)
+          StatCard(label: L10n.t("detail.ofAll"), value: model.pctOfAll)
+          StatCard(label: L10n.t("stat.peakHour"), value: L10n.t("hour.fmt", model.peakHour),
+                   sub: L10n.t("sub.hourKeys", model.hourly[model.peakHour].formatted()))
+        }
+        content
+      }
+      .padding(20)
+      .id(settings.lang)
+    }
+    .frame(minWidth: 760, minHeight: 680)
+    .background(Theme.bg)
+    .navigationBarBackButtonHidden(true)     // 自前の戻るを使う
+  }
+
+  private var header: some View {
+    HStack(spacing: 10) {
+      Button { dismiss() } label: {
+        HStack(spacing: 3) { Image(systemName: "chevron.left"); Text(L10n.t("back")) }
+          .font(.system(size: 13, weight: .medium))
+      }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+      Divider().frame(height: 16)
+      Image(systemName: titleIcon).foregroundStyle(Theme.accent).font(.system(size: 18))
+      Text(titleText).font(.system(size: 20, weight: .bold)).lineLimit(1)
+      if case .keyboard = model.target {
+        Text(L10n.t("detail.sinceAdded")).font(.system(size: 10)).foregroundStyle(Theme.sub)
+      }
+      Spacer()
+    }
+  }
+
+  @ViewBuilder private var content: some View {
+    switch model.target {
+    case .key:
+      Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
+        BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
+                onTap: { onDrill(.app(model.apps[$0].app)) })
+      }
+      Card(title: L10n.t("detail.withMods"), icon: "command") {
+        BarList(rows: model.combos.prefix(12).map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
+      }
+      chartsCards
+    case .app, .keyboard:
+      Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
+        Keyboard(perKey: model.perKey, maxKey: model.maxKey, layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
+                 onTapKey: { onDrill(.key($0)) })
+          .frame(maxWidth: .infinity, alignment: .center)
+      }
+      HStack(alignment: .top, spacing: 16) {
+        Card(title: L10n.t("card.topKeys"), icon: "trophy") {
+          BarList(rows: model.topKeys.map { (label($0.0, jis: useJIS), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true,
+                  onTap: { onDrill(.key(model.topKeys[$0].0)) })
+        }
+        if case .app = model.target {
+          Card(title: L10n.t("card.combos"), icon: "command") {
+            BarList(rows: model.combos.prefix(12).map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
+          }
+        } else {
+          Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
+            BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
+                    onTap: { onDrill(.app(model.apps[$0].app)) })
+          }
+        }
+      }
+      chartsCards
+    }
+  }
+
+  private var chartsCards: some View {
+    Group {
+      HStack(alignment: .top, spacing: 16) {
+        Card(title: L10n.t("card.hourly"), icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
+        Card(title: L10n.t("card.daily"), icon: "chart.bar") { DailyTrend(daily: model.daily) }
+      }
+      Card(title: L10n.t("card.weekday"), icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
+    }
+  }
+}
 
 // 言語などのアプリ全体設定。切替で SwiftUI を再描画するため ObservableObject。
 @MainActor
@@ -497,9 +711,11 @@ struct DashboardView: View {
   @ObservedObject var settings = AppSettings.shared   // 言語切替を監視して再描画
   @State private var live = true
   @State private var showUpdateConfirm = false
+  @State private var path: [DetailTarget] = []   // ドリルダウン(潜る)のナビゲーションスタック
   private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
   var body: some View {
+    NavigationStack(path: $path) {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
         header
@@ -524,11 +740,12 @@ struct DashboardView: View {
           StatCard(label: L10n.t("stat.peakSpeed"), value: "\(model.typing.peakKpm)", sub: L10n.t("sub.kpmPeak"))
           StatCard(label: L10n.t("stat.activeTyping"), value: fmtDuration(model.typing.activeSeconds), sub: L10n.t("sub.activeReal"))
           StatCard(label: L10n.t("stat.correction"), value: String(format: "%.1f%%", model.correctionRate),
-                   sub: L10n.t("sub.deletes", model.deletes.formatted()))
+                   sub: L10n.t("sub.corrections", model.corrections.formatted()))
         }
         Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
           Keyboard(perKey: model.perKey, maxKey: model.maxKey,
-                   layout: useJIS ? jisLayout : ansiLayout, jis: useJIS)
+                   layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
+                   onTapKey: { path.append(.key($0)) })
             .frame(maxWidth: .infinity, alignment: .center)
         }
         HStack(alignment: .top, spacing: 16) {
@@ -538,23 +755,33 @@ struct DashboardView: View {
         Card(title: L10n.t("card.weekday"), icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
         HStack(alignment: .top, spacing: 16) {
           Card(title: L10n.t("card.topKeys"), icon: "trophy") {
-            BarList(rows: model.topKeys.map { (label($0.0), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true)
+            BarList(rows: model.topKeys.map { (label($0.0, jis: useJIS), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true,
+                    onTap: { path.append(.key(model.topKeys[$0].0)) })
           }
-          Card(title: L10n.t("card.combos"), icon: "command") {
-            BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
+          Card(title: L10n.t("card.weakKeys"), icon: "exclamationmark.triangle") {
+            BarList(rows: model.weakKeys.map { (label($0.kc, jis: useJIS), Int(($0.rate * 100).rounded())) },
+                    color: Theme.accent2, labelWidth: 64, rounded: true,
+                    valueFmt: { String(format: "%.2f%%", Double($0) / 100) },
+                    onTap: { path.append(.key(model.weakKeys[$0].kc)) })
           }
+        }
+        Card(title: L10n.t("card.combos"), icon: "command") {
+          BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
         }
         HStack(alignment: .top, spacing: 16) {
           Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
-            BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150)
+            BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
+                    onTap: { path.append(.app(model.apps[$0].app)) })
           }
           Card(title: L10n.t("card.appTime"), icon: "hourglass") {
             BarList(rows: model.appTime.prefix(12).map { (label: shortApp($0.app), n: $0.n) },
-                    color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration)
+                    color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration,
+                    onTap: { path.append(.app(model.appTime[$0].app)) })
           }
         }
         Card(title: L10n.t("card.kbType"), icon: "keyboard.badge.ellipsis") {
-          BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150)
+          BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150,
+                  onTap: { path.append(.keyboard(model.kbTypes[$0].0)) })
         }
       }
       .padding(20)
@@ -569,6 +796,10 @@ struct DashboardView: View {
       Button(L10n.t("alert.later"), role: .cancel) {}
     } message: {
       if case .available(let v) = updater.state { Text(L10n.t("update.confirmBody", v)) }
+    }
+    .navigationDestination(for: DetailTarget.self) { t in
+      DetailView(target: t, period: model.period, useJIS: useJIS, onDrill: { path.append($0) })
+    }
     }
   }
 
@@ -629,21 +860,17 @@ struct DashboardView: View {
     b > 0 ? String(format: "%.0f%%", Double(a) / Double(b) * 100) : "0%"
   }
 
-  // 使用する配列。auto は「データにJIS専用キーあり → JIS確定」、無ければ言語/地域から推定。
+  // 使用する配列。auto の判定は正確な順: JIS専用キーの記録 → 実キーボード種別 → (不明時のみ)言語。
+  // 地域(JP)は使わない: 日本在住でも US 配列の人がいるため誤爆する。
   private var useJIS: Bool {
     switch settings.layoutPref {
     case .ansi: return false
     case .jis:  return true
-    case .auto: return model.hasJISKeys || Self.isJapaneseLocale(appLang: settings.lang)
+    case .auto:
+      if model.hasJISKeys { return true }              // 英数/かな/¥ の記録あり → JIS確定
+      if let jis = model.keyboardIsJIS { return jis }  // 実キーボードの種別で確定
+      return settings.lang == .ja                       // 不明時のみ言語で推定
     }
-  }
-
-  // 言語・地域から日本語環境かを推定(en-JP のように UI が英語でも日本在住なら JIS 既定が自然)。
-  static func isJapaneseLocale(appLang: Lang) -> Bool {
-    if appLang == .ja { return true }                                    // アプリ言語=日本語
-    if Locale.preferredLanguages.contains(where: { $0.lowercased().hasPrefix("ja") }) { return true } // 優先言語に日本語
-    if Locale.current.region?.identifier == "JP" { return true }         // 地域=日本
-    return false
   }
 }
 

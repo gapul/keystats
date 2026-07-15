@@ -25,6 +25,7 @@ nonisolated(unsafe) var downMods: Set<Int> = []   // 押しっぱなし中の修
 let activeGapMax = 2.0                     // これ以上空いたら「入力中」でない(考え中/離席)
 let peakWindow = 5.0                       // ピーク算出の移動窓(秒)
 let peakMinKeys = 5                        // ピークとみなす最小打鍵数(単発の速さをノイズ除外)
+let peakMinSpan = 2.0                      // ピークは2秒以上の持続打鍵のみ(短い連打の分母極小で暴発するのを防ぐ)
 let correctionKeys: Set<Int> = [51, 117]   // Delete/Backspace/前方削除は速度に含めない(修正打鍵)
 nonisolated(unsafe) var lastKeyTime: Double = 0
 nonisolated(unsafe) var recentKeyTimes: [Double] = []   // 移動窓に入る直近の打鍵時刻
@@ -44,18 +45,49 @@ nonisolated(unsafe) var recentKeyTimes: [Double] = []   // 移動窓に入る直
   let cutoff = now - peakWindow
   while let first = recentKeyTimes.first, first < cutoff { recentKeyTimes.removeFirst() }
   var peakKpm = 0
-  if recentKeyTimes.count >= peakMinKeys, let first = recentKeyTimes.first, now - first > 0 {
-    peakKpm = Int(Double(recentKeyTimes.count) / (now - first) * 60)
+  if recentKeyTimes.count >= peakMinKeys, let first = recentKeyTimes.first {
+    let span = now - first
+    // 2秒以上の持続打鍵に限る = 瞬間的な連打で分母が極小になり暴発するのを防ぐ
+    if span >= peakMinSpan { peakKpm = Int(Double(recentKeyTimes.count) / span * 60) }
   }
   globalStore?.bumpTyping(hour: Int(now) / 3600, activeMs: Int(gap * 1000), peakKpm: peakKpm)
 }
 
-// ⌘/⌃/⌥/fn のいずれかを伴う打鍵を「組み合わせ」として記録(Shift単独は除外)。
+// 苦手キー: 修正(Backspace/前方削除/⌃H/⌘Z)の直前タイピングに等比減衰の重みを配分。
+// 直前=1, 2つ前=ratio, 3つ前=ratio², ... と遡る(depth まで)。「打った直後に消したキー」ほど苦手。
+let mistypeRatio = 0.5
+let mistypeDepth = 4
+let mistypeMaxAge = 3.0    // 修正の直前とみなす最大経過秒。これより古い打鍵は苦手判定に含めない(間を空けた修正の誤爆防止)
+let mistypeMinWeight = 0.05 // 重みがこれ未満になったら打ち切り
+nonisolated(unsafe) var recentTyped: [(kc: Int, t: Double)] = []   // 直近のタイピングキー(末尾=最新, 時刻付き)
+
+@inline(__always) func recordMistype(_ keycode: Int, _ flags: CGEventFlags, hour: Int, now: Double) {
+  let isCmd = flags.contains(.maskCommand), isCtrl = flags.contains(.maskControl), isOpt = flags.contains(.maskAlternate)
+  let isBackspaceLike = correctionKeys.contains(keycode) || (keycode == 4 && isCtrl)  // Backspace/前方削除/⌃H(1文字削除)
+  let isUndo = keycode == 6 && isCmd                                                  // ⌘Z(まとめて取り消し)
+  if isBackspaceLike || isUndo {
+    var w = 1.0
+    for e in recentTyped.reversed() {                            // 新しい順に遡る
+      if now - e.t > mistypeMaxAge { break }                     // 古すぎる打鍵 → 打ち切り(時間制限)
+      globalStore?.bumpMistype(hour: hour, keycode: e.kc, weight: w)
+      w *= mistypeRatio
+      if w < mistypeMinWeight { break }                          // 重み微小 → 打ち切り
+    }
+    if isUndo { recentTyped.removeAll() }                        // 取り消しは範囲不定 → 履歴クリア
+    else if !recentTyped.isEmpty { recentTyped.removeLast() }    // 1文字削除 → 履歴も1つ戻す
+  } else if !(isCmd || isCtrl || isOpt) {                         // タイピングキーのみ積む(ショートカット除外)
+    recentTyped.append((keycode, now))
+    if recentTyped.count > mistypeDepth { recentTyped.removeFirst() }
+  }
+}
+
+// ⌘/⌃/⌥ のいずれかを伴う打鍵を「組み合わせ」として記録(Shift単独は除外)。
+// fn は除外: macOS が矢印/ナビゲーション/F キーに常時 fn フラグを付けるため、
+// これを修飾扱いすると「矢印単押し → fn→」「⌘+矢印 → fn⌘→」と誤検出される。
 @inline(__always) func recordComboIfNeeded(_ keycode: Int, _ flags: CGEventFlags) {
-  let shortcutMods: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskSecondaryFn]
+  let shortcutMods: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
   guard !flags.isDisjoint(with: shortcutMods) else { return }   // ショートカット修飾なし → 通常打鍵
   var label = ""
-  if flags.contains(.maskSecondaryFn) { label += "fn" }
   if flags.contains(.maskControl)     { label += "⌃" }
   if flags.contains(.maskAlternate)   { label += "⌥" }
   if flags.contains(.maskShift)       { label += "⇧" }
@@ -114,9 +146,14 @@ func runDaemon() {
         recordKey(kc)                              // 物理キーとしても数える
         recordTyping(kc)                           // 入力速度(連続打鍵の間隔)。Delete は除外
         recordComboIfNeeded(kc, event.flags)       // 修飾付きなら組み合わせも記録
-        // キーボード種別(内蔵/外付けの区別)
+        // キーボード種別 + キーボード別打鍵 + 苦手キー
         let kbt = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
-        globalStore?.bumpKbType(hour: Int(Date().timeIntervalSince1970) / 3600, kbtype: kbt)
+        let now = Date().timeIntervalSince1970
+        let hour = Int(now) / 3600
+        globalStore?.bumpKbType(hour: hour, kbtype: kbt)
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        globalStore?.bumpCountKb(hour: hour, keycode: kc, app: app, kbtype: kbt)
+        recordMistype(kc, event.flags, hour: hour, now: now)
       }
     case .flagsChanged:
       let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
@@ -193,14 +230,15 @@ func showSpeed() {
   let store = Store()
   let t = store.typingSummary()
   let pk = store.perKey()
-  let del = (pk[51] ?? 0) + (pk[117] ?? 0)          // Delete/Backspace + 前方削除
+  // 修正: Delete/Backspace + 前方削除 + 取り消し(⌘Z) + Emacs風削除(⌃H)
+  let corr = (pk[51] ?? 0) + (pk[117] ?? 0) + store.comboCount(["⌘Z", "⌃H"])
   let total = pk.values.reduce(0, +)
-  let rate = total > 0 ? Double(del) / Double(total) * 100 : 0
+  let rate = total > 0 ? Double(corr) / Double(total) * 100 : 0
   print(L10n.t("cli.speed.title"))
   print(L10n.t("cli.speed.avg", t.avgKpm))
   print(L10n.t("cli.speed.peak", t.peakKpm))
   print(L10n.t("cli.speed.active", t.activeSeconds / 60))
-  print(L10n.t("cli.speed.correction", rate, del, total))
+  print(L10n.t("cli.speed.correction", rate, corr, total))
 }
 
 // MARK: - entry

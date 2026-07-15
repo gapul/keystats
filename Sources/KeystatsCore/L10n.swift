@@ -69,8 +69,8 @@ public enum L10n {
     "cli.speed.avg":        [.ja: "  平均      : %d KPM (フロー中)",     .en: "  Average : %d KPM (in flow)"],
     "cli.speed.peak":       [.ja: "  ピーク    : %d KPM (最速バースト)", .en: "  Peak    : %d KPM (fastest burst)"],
     "cli.speed.active":     [.ja: "  実打鍵時間: %d 分",                 .en: "  Active  : %d min"],
-    "cli.speed.correction": [.ja: "  修正率    : %.1f%% (削除%d / 総%d 打鍵)",
-                             .en: "  Correct : %.1f%% (%d deletes / %d total)"],
+    "cli.speed.correction": [.ja: "  修正率    : %.1f%% (修正%d / 総%d 打鍵)",
+                             .en: "  Correct : %.1f%% (%d corrections / %d total)"],
     "cli.usage": [
       .ja: """
         keystats — 打鍵ヒートマップ収集
@@ -131,7 +131,7 @@ public enum L10n {
     "sub.kpmFlow":       [.ja: "KPM · フロー中", .en: "KPM · in flow"],
     "sub.kpmPeak":       [.ja: "KPM · 最速バースト", .en: "KPM · fastest burst"],
     "sub.activeReal":    [.ja: "実際に叩いた時間",   .en: "actual typing time"],
-    "sub.deletes":       [.ja: "%@ 回削除",      .en: "%@ deletes"],
+    "sub.corrections":   [.ja: "%@ 回修正",      .en: "%@ corrections"],
     "hour.fmt":          [.ja: "%d時",           .en: "%d:00"],
 
     // --- GUI: card titles ---
@@ -144,6 +144,12 @@ public enum L10n {
     "card.appKeys": [.ja: "アプリ別打鍵数",        .en: "Keystrokes by app"],
     "card.appTime": [.ja: "アプリ稼働時間",        .en: "App active time"],
     "card.kbType":  [.ja: "キーボード別",          .en: "By keyboard"],
+    "card.weakKeys":[.ja: "苦手なキー",            .en: "Weak keys"],
+    "detail.ofAll":     [.ja: "全体比",            .en: "% of all"],
+    "detail.withMods":  [.ja: "修飾キー連携",      .en: "With modifiers"],
+    "detail.sinceAdded":[.ja: "導入以降のデータ",  .en: "since added"],
+    "weak.hint":        [.ja: "修正直前率",        .en: "pre-correction rate"],
+    "back":             [.ja: "戻る",              .en: "Back"],
 
     "empty":       [.ja: "まだ記録なし",        .en: "No data yet"],
     "app.unknown": [.ja: "不明",                .en: "Unknown"],

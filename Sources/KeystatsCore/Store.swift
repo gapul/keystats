@@ -87,6 +87,8 @@ public final class Store {
   private var apptimeUpsert: OpaquePointer?
   private var kbtypeUpsert: OpaquePointer?
   private var typingUpsert: OpaquePointer?
+  private var mistypeUpsert: OpaquePointer?
+  private var countsKbUpsert: OpaquePointer?
   private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   public init(path: String = Paths.dbPath) {
@@ -165,6 +167,34 @@ public final class Store {
         keys      = keys + 1,
         peak_kpm  = MAX(peak_kpm, excluded.peak_kpm);
     """, -1, &typingUpsert, nil)
+    // 苦手キー判定: 修正(Backspace/⌘Z/⌃H)の直前キーに等比減衰の重みを配分して蓄積。
+    exec("""
+      CREATE TABLE IF NOT EXISTS mistype (
+        hour    INTEGER NOT NULL,
+        keycode INTEGER NOT NULL,
+        weight  REAL    NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, keycode)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO mistype (hour, keycode, weight) VALUES (?, ?, ?)
+      ON CONFLICT(hour, keycode) DO UPDATE SET weight = weight + excluded.weight;
+    """, -1, &mistypeUpsert, nil)
+    // キーボード別の打鍵(kbtype 次元)。既存 counts は触らず並行記録。keyboard 別ドリルダウン用。
+    exec("""
+      CREATE TABLE IF NOT EXISTS counts_kb (
+        hour    INTEGER NOT NULL,
+        keycode INTEGER NOT NULL,
+        app     TEXT    NOT NULL,
+        kbtype  INTEGER NOT NULL,
+        n       INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, keycode, app, kbtype)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO counts_kb (hour, keycode, app, kbtype, n) VALUES (?, ?, ?, ?, 1)
+      ON CONFLICT(hour, keycode, app, kbtype) DO UPDATE SET n = n + 1;
+    """, -1, &countsKbUpsert, nil)
   }
 
   deinit {   // 接続とプリペアド文を必ず解放(GUIが頻繁に生成するのでリークすると fd 枯渇→open失敗)
@@ -173,6 +203,8 @@ public final class Store {
     sqlite3_finalize(apptimeUpsert)
     sqlite3_finalize(kbtypeUpsert)
     sqlite3_finalize(typingUpsert)
+    sqlite3_finalize(mistypeUpsert)
+    sqlite3_finalize(countsKbUpsert)
     sqlite3_close_v2(handle)
   }
 
@@ -221,6 +253,27 @@ public final class Store {
     sqlite3_bind_int64(typingUpsert, 2, sqlite3_int64(activeMs))
     sqlite3_bind_int64(typingUpsert, 3, sqlite3_int64(peakKpm))
     sqlite3_step(typingUpsert)
+  }
+
+  /// 苦手キー: 修正の直前キー(keycode)に重み weight を加算。
+  public func bumpMistype(hour: Int, keycode: Int, weight: Double) {
+    guard let mistypeUpsert else { return }
+    sqlite3_reset(mistypeUpsert)
+    sqlite3_bind_int64(mistypeUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_int64(mistypeUpsert, 2, sqlite3_int64(keycode))
+    sqlite3_bind_double(mistypeUpsert, 3, weight)
+    sqlite3_step(mistypeUpsert)
+  }
+
+  /// キーボード別の打鍵を記録(kbtype 次元)。
+  public func bumpCountKb(hour: Int, keycode: Int, app: String, kbtype: Int) {
+    guard let countsKbUpsert else { return }
+    sqlite3_reset(countsKbUpsert)
+    sqlite3_bind_int64(countsKbUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_int64(countsKbUpsert, 2, sqlite3_int64(keycode))
+    sqlite3_bind_text(countsKbUpsert, 3, app, -1, Store.TRANSIENT)
+    sqlite3_bind_int64(countsKbUpsert, 4, sqlite3_int64(kbtype))
+    sqlite3_step(countsKbUpsert)
   }
 
   private func query(_ sql: String, _ row: (OpaquePointer) -> Void) {
@@ -321,6 +374,16 @@ public final class Store {
     return out
   }
 
+  /// 指定した組み合わせキー(例 ["⌘Z","⌃H"])の合計打鍵数。sinceHour で期間を絞る。修正率などに使う。
+  public func comboCount(_ labels: [String], sinceHour: Int = 0) -> Int {
+    guard !labels.isEmpty else { return 0 }
+    let inList = labels.map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }.joined(separator: ",")
+    let cond = "WHERE combo IN (\(inList))" + (sinceHour > 0 ? " AND hour >= \(sinceHour)" : "")
+    var n = 0
+    query("SELECT COALESCE(SUM(n),0) FROM combos \(cond);") { n = Int(sqlite3_column_int64($0, 0)) }
+    return n
+  }
+
   /// 入力速度の集計(平均KPM・ピーク・実打鍵時間)。sinceHour で期間を絞る。
   public func typingSummary(sinceHour: Int = 0) -> TypingSummary {
     var a = 0, k = 0, p = 0
@@ -329,6 +392,101 @@ public final class Store {
       a = Int(sqlite3_column_int64($0, 0)); k = Int(sqlite3_column_int64($0, 1)); p = Int(sqlite3_column_int64($0, 2))
     }
     return TypingSummary(activeMs: a, keys: k, peakKpm: p)
+  }
+
+  // MARK: ドリルダウン用フィルタ集計(キー/アプリ/キーボード)
+
+  private func sqlEsc(_ s: String) -> String { s.replacingOccurrences(of: "'", with: "''") }
+
+  /// counts / counts_kb の FROM+WHERE を組む。kbtype 指定時のみ counts_kb を使う。
+  private func countsFrom(_ sinceHour: Int, keycode: Int?, app: String?, kbtype: Int?) -> String {
+    var conds: [String] = []
+    if sinceHour > 0 { conds.append("hour >= \(sinceHour)") }
+    if let keycode { conds.append("keycode = \(keycode)") }
+    if let app { conds.append("app = '\(sqlEsc(app))'") }
+    let table = kbtype != nil ? "counts_kb" : "counts"
+    if let kbtype { conds.append("kbtype = \(kbtype)") }
+    let w = conds.isEmpty ? "" : " WHERE " + conds.joined(separator: " AND ")
+    return "\(table)\(w)"
+  }
+
+  /// keycode -> 打鍵数(app/kbtype で絞れる)。
+  public func keyCounts(sinceHour: Int = 0, app: String? = nil, kbtype: Int? = nil) -> [Int: Int] {
+    var out: [Int: Int] = [:]
+    query("SELECT keycode, SUM(n) FROM " + countsFrom(sinceHour, keycode: nil, app: app, kbtype: kbtype) + " GROUP BY keycode;") {
+      out[Int(sqlite3_column_int64($0, 0))] = Int(sqlite3_column_int64($0, 1))
+    }
+    return out
+  }
+
+  /// アプリ別打鍵数(keycode/kbtype で絞れる, 降順)。
+  public func appCounts(sinceHour: Int = 0, keycode: Int? = nil, kbtype: Int? = nil) -> [AppCount] {
+    var out: [AppCount] = []
+    query("SELECT app, SUM(n) AS s FROM " + countsFrom(sinceHour, keycode: keycode, app: nil, kbtype: kbtype) + " GROUP BY app ORDER BY s DESC;") {
+      out.append(AppCount(app: String(cString: sqlite3_column_text($0, 0)), n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out
+  }
+
+  /// 総打鍵数(任意フィルタ)。
+  public func totalCounts(sinceHour: Int = 0, keycode: Int? = nil, app: String? = nil, kbtype: Int? = nil) -> Int {
+    var t = 0
+    query("SELECT COALESCE(SUM(n),0) FROM " + countsFrom(sinceHour, keycode: keycode, app: app, kbtype: kbtype) + ";") {
+      t = Int(sqlite3_column_int64($0, 0))
+    }
+    return t
+  }
+
+  /// 時間帯別(0..23)。任意フィルタ。
+  public func hourlyCounts(offsetHours off: Int, sinceHour: Int = 0, keycode: Int? = nil, app: String? = nil, kbtype: Int? = nil) -> [Int] {
+    var out = Array(repeating: 0, count: 24)
+    query("SELECT ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM " + countsFrom(sinceHour, keycode: keycode, app: app, kbtype: kbtype) + " GROUP BY h;") {
+      let h = Int(sqlite3_column_int64($0, 0)); if h >= 0, h < 24 { out[h] = Int(sqlite3_column_int64($0, 1)) }
+    }
+    return out
+  }
+
+  /// 曜日×時間帯。任意フィルタ。
+  public func weekdayCounts(offsetHours off: Int, sinceHour: Int = 0, keycode: Int? = nil, app: String? = nil, kbtype: Int? = nil) -> [[Int]] {
+    var out = Array(repeating: Array(repeating: 0, count: 24), count: 7)
+    query("SELECT ((hour + \(off)) / 24 + 4) % 7 AS wd, ((hour + \(off)) % 24 + 24) % 24 AS h, SUM(n) FROM "
+          + countsFrom(sinceHour, keycode: keycode, app: app, kbtype: kbtype) + " GROUP BY wd, h;") {
+      let wd = Int(sqlite3_column_int64($0, 0)); let h = Int(sqlite3_column_int64($0, 1))
+      if wd >= 0, wd < 7, h >= 0, h < 24 { out[wd][h] = Int(sqlite3_column_int64($0, 2)) }
+    }
+    return out
+  }
+
+  /// 直近 days 日の日別。任意フィルタ。
+  public func dailyCounts(days: Int, offsetHours off: Int, keycode: Int? = nil, app: String? = nil, kbtype: Int? = nil) -> [DayCount] {
+    var out: [DayCount] = []
+    query("SELECT (hour + \(off)) / 24 AS d, SUM(n) FROM " + countsFrom(0, keycode: keycode, app: app, kbtype: kbtype)
+          + " GROUP BY d ORDER BY d DESC LIMIT \(days);") {
+      out.append(DayCount(day: Int(sqlite3_column_int64($0, 0)), n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out.reversed()
+  }
+
+  /// 全組み合わせキー(app で絞れる)。キー別の修飾連携は呼び出し側で末尾一致フィルタする。
+  public func allCombos(sinceHour: Int = 0, app: String? = nil) -> [ComboCount] {
+    var conds: [String] = []
+    if sinceHour > 0 { conds.append("hour >= \(sinceHour)") }
+    if let app { conds.append("app = '\(sqlEsc(app))'") }
+    let w = conds.isEmpty ? "" : " WHERE " + conds.joined(separator: " AND ")
+    var out: [ComboCount] = []
+    query("SELECT combo, SUM(n) AS s FROM combos\(w) GROUP BY combo ORDER BY s DESC;") {
+      out.append(ComboCount(combo: String(cString: sqlite3_column_text($0, 0)), n: Int(sqlite3_column_int64($0, 1))))
+    }
+    return out
+  }
+
+  /// 苦手キー: keycode -> 修正直前の重み合計。
+  public func mistypeCounts(sinceHour: Int = 0) -> [Int: Double] {
+    var out: [Int: Double] = [:]
+    query("SELECT keycode, SUM(weight) FROM mistype" + (sinceHour > 0 ? " WHERE hour >= \(sinceHour)" : "") + " GROUP BY keycode;") {
+      out[Int(sqlite3_column_int64($0, 0))] = sqlite3_column_double($0, 1)
+    }
+    return out
   }
 
   /// キーボード種別ごとの打鍵数(降順)。kbtype は kCGKeyboardEventKeyboardType。
