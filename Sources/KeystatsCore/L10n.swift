@@ -146,6 +146,7 @@ public enum L10n {
     "card.kbType":  [.ja: "キーボード別",          .en: "By keyboard"],
 
     "empty":       [.ja: "まだ記録なし",        .en: "No data yet"],
+    "app.unknown": [.ja: "不明",                .en: "Unknown"],
     "kb.builtin":  [.ja: "内蔵/Apple (%d)",     .en: "Built-in/Apple (%d)"],
     "kb.external": [.ja: "外付け (%d)",         .en: "External (%d)"],
 
@@ -167,5 +168,14 @@ public enum L10n {
     "update.updatingBody":   [.ja: "バックグラウンドで更新します。完了すると通知が出ます。",
                               .en: "Updating in the background. You'll be notified when done."],
     "update.latest":         [.ja: "最新版です。",             .en: "You're on the latest version."],
+
+    // --- GUI: ダッシュボードの更新バッジ ---
+    "update.checking":    [.ja: "確認中…",         .en: "Checking…"],
+    "update.upToDate":    [.ja: "最新",            .en: "Latest"],
+    "update.newVer":      [.ja: "アップデート %@", .en: "Update %@"],
+    "update.updating":    [.ja: "更新中…",         .en: "Updating…"],
+    "update.failed":      [.ja: "確認失敗",         .en: "Check failed"],
+    "update.confirmBody": [.ja: "%@ に更新します。アプリが再起動します。",
+                           .en: "Update to %@. The app will restart."],
   ]
 }

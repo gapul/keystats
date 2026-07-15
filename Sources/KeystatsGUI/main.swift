@@ -59,8 +59,32 @@ func heatColor(_ n: Int, max: Int) -> Color {
   return Color(hue: hue, saturation: 0.82, brightness: 0.96)
 }
 
+// bundle id を実際のアプリ表示名に解決する。DB には bundle id しか無いので表示時に引く。
+// NSWorkspace(LaunchServices)で .app を探し、CFBundleDisplayName/Name を使う。
+// 解決結果はキャッシュ(GUI は main スレッドのみなので unsafe で可)。
+nonisolated(unsafe) var appNameCache: [String: String] = [:]
+
 func shortApp(_ bundle: String) -> String {
-  bundle.split(separator: ".").last.map(String.init) ?? bundle
+  if bundle == "unknown" || bundle.isEmpty { return L10n.t("app.unknown") }  // 言語依存なので都度
+  if let cached = appNameCache[bundle] { return cached }
+  let name = resolveAppName(bundle)
+  appNameCache[bundle] = name
+  return name
+}
+
+private func resolveAppName(_ bundle: String) -> String {
+  if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) {
+    let info = Bundle(url: url)
+    if let n = (info?.localizedInfoDictionary?["CFBundleDisplayName"] as? String)
+        ?? (info?.infoDictionary?["CFBundleDisplayName"] as? String)
+        ?? (info?.infoDictionary?["CFBundleName"] as? String), !n.isEmpty {
+      return n
+    }
+    let fn = FileManager.default.displayName(atPath: url.path)   // 例: "Safari.app"
+    return fn.hasSuffix(".app") ? String(fn.dropLast(4)) : fn
+  }
+  // 解決不可(未インストール/ヘルパ等) → 従来のヒューリスティック(末尾コンポーネント)
+  return bundle.split(separator: ".").last.map(String.init) ?? bundle
 }
 
 func dayLabel(_ day: Int) -> String {          // day = ローカル epoch 日数 → "M/d"
@@ -365,12 +389,74 @@ final class AppSettings: ObservableObject {
   func setLang(_ l: Lang) { L10n.set(l); lang = l }
 }
 
+// アプリ内アップデート(手動)。GitHub Releases の最新版を確認し、ボタンで適用する。
+// 適用は同梱 keystats-update を launchd 経由で走らせる(実行中の自分を安全に差し替えるため
+// GUI から切り離して動かす)。差し替え後は updater が新アプリを起動し直す。
+@MainActor
+final class Updater: ObservableObject {
+  enum State: Equatable { case checking, upToDate, available(String), updating, failed }
+  @Published var state: State = .checking
+  let current: String = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+
+  /// GitHub の最新リリースを取得して現在版と比較。
+  func check() {
+    state = .checking
+    Task {
+      guard let url = URL(string: "https://api.github.com/repos/gapul/keystats/releases/latest") else {
+        state = .failed; return
+      }
+      var req = URLRequest(url: url)
+      req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+      do {
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let tag = (obj?["tag_name"] as? String) ?? ""
+        let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        guard !latest.isEmpty else { state = .failed; return }
+        state = Self.isNewer(latest, than: current) ? .available(latest) : .upToDate
+      } catch {
+        state = .failed
+      }
+    }
+  }
+
+  /// 更新を適用(updater を launchd で kickstart)。以降 updater が本アプリを差し替え→再起動。
+  func apply() {
+    state = .updating
+    let uid = getuid()
+    let plist = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.update.plist").path
+    if !agentLoaded("net.gapul.keystats.update") { launchctl(["bootstrap", "gui/\(uid)", plist]) }
+    launchctl(["kickstart", "-k", "gui/\(uid)/net.gapul.keystats.update"])
+  }
+
+  /// semver 風の数値比較($a > $b か)。
+  static func isNewer(_ a: String, than b: String) -> Bool {
+    func parts(_ s: String) -> [Int] { s.split(separator: ".").map { Int($0) ?? 0 } }
+    let x = parts(a), y = parts(b)
+    for i in 0..<max(x.count, y.count) {
+      let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+      if l != r { return l > r }
+    }
+    return false
+  }
+
+  @discardableResult
+  private func launchctl(_ args: [String]) -> Int32 {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = args
+    do { try p.run(); p.waitUntilExit(); return p.terminationStatus } catch { return -1 }
+  }
+  private func agentLoaded(_ label: String) -> Bool { launchctl(["print", "gui/\(getuid())/\(label)"]) == 0 }
+}
+
 // MARK: - ダッシュボード
 
 struct DashboardView: View {
   @StateObject var model = Model()
+  @StateObject private var updater = Updater()
   @ObservedObject var settings = AppSettings.shared   // 言語切替を監視して再描画
   @State private var live = true
+  @State private var showUpdateConfirm = false
   private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
   var body: some View {
@@ -435,8 +521,14 @@ struct DashboardView: View {
     }
     .background(Theme.bg)
     .frame(minWidth: 900, minHeight: 720)
-    .onAppear { model.reload() }
+    .onAppear { model.reload(); updater.check() }
     .onReceive(timer) { _ in if live { model.reload() } }
+    .alert(L10n.t("update.available"), isPresented: $showUpdateConfirm) {
+      Button(L10n.t("update.now")) { updater.apply() }
+      Button(L10n.t("alert.later"), role: .cancel) {}
+    } message: {
+      if case .available(let v) = updater.state { Text(L10n.t("update.confirmBody", v)) }
+    }
   }
 
   private var header: some View {
@@ -447,6 +539,7 @@ struct DashboardView: View {
         Text(L10n.t("app.subtitle")).font(.system(size: 11)).foregroundStyle(Theme.sub)
       }
       Spacer()
+      updateControl
       Button {
         live.toggle(); if live { model.reload() }
       } label: {
@@ -457,6 +550,37 @@ struct DashboardView: View {
       }.buttonStyle(.bordered)
       Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
         .keyboardShortcut("r")
+    }
+  }
+
+  // バージョン表示＋更新ボタン。最新なら控えめ、更新ありなら強調ボタン。
+  @ViewBuilder private var updateControl: some View {
+    switch updater.state {
+    case .checking:
+      HStack(spacing: 5) {
+        ProgressView().controlSize(.small)
+        Text(L10n.t("update.checking")).font(.system(size: 12))
+      }.foregroundStyle(Theme.sub)
+    case .upToDate:
+      Button { updater.check() } label: {
+        Text("v\(updater.current) · \(L10n.t("update.upToDate"))").font(.system(size: 12))
+      }.buttonStyle(.plain).foregroundStyle(Theme.sub)
+    case .available(let v):
+      Button { showUpdateConfirm = true } label: {
+        HStack(spacing: 5) {
+          Image(systemName: "arrow.down.circle.fill")
+          Text(L10n.t("update.newVer", v)).font(.system(size: 12, weight: .semibold))
+        }
+      }.buttonStyle(.borderedProminent).tint(Theme.accent)
+    case .updating:
+      HStack(spacing: 5) {
+        ProgressView().controlSize(.small)
+        Text(L10n.t("update.updating")).font(.system(size: 12))
+      }.foregroundStyle(Theme.accent)
+    case .failed:
+      Button { updater.check() } label: {
+        Text("v\(updater.current) · \(L10n.t("update.failed"))").font(.system(size: 12))
+      }.buttonStyle(.plain).foregroundStyle(Theme.sub)
     }
   }
 
