@@ -10,7 +10,7 @@ import KeystatsCore
 
 struct KeyDef { let kc: Int; let w: Double }  // w = 幅ユニット(1 = 標準キー)
 
-let layout: [[KeyDef]] = [
+let ansiLayout: [[KeyDef]] = [
   [53,122,120,99,118,96,97,98,100,101,109,103,111].map { KeyDef(kc: $0, w: 1) },
   [50,18,19,20,21,23,22,26,28,25,29,27,24].map { KeyDef(kc: $0, w: 1) } + [KeyDef(kc: 51, w: 1.6)],
   [KeyDef(kc: 48, w: 1.6)] + [12,13,14,15,17,16,32,34,31,35,33,30,42].map { KeyDef(kc: $0, w: 1) },
@@ -19,6 +19,25 @@ let layout: [[KeyDef]] = [
   [KeyDef(kc: 63, w: 1), KeyDef(kc: 59, w: 1), KeyDef(kc: 58, w: 1), KeyDef(kc: 55, w: 1.3),
    KeyDef(kc: 49, w: 5.6), KeyDef(kc: 54, w: 1.3), KeyDef(kc: 61, w: 1),
    KeyDef(kc: 123, w: 1), KeyDef(kc: 125, w: 1), KeyDef(kc: 126, w: 1), KeyDef(kc: 124, w: 1)],
+]
+
+// JIS(日本語配列)。¥(93)を数字段に追加、英数(102)/かな(104)で短いスペースを挟む、_(94)を右Shift手前。
+// キーコードは物理位置で ANSI と共通(刻印だけ違う)。刻印は label(_:jis:) が JIS 用に差し替える。
+let jisLayout: [[KeyDef]] = [
+  [53,122,120,99,118,96,97,98,100,101,109,103,111].map { KeyDef(kc: $0, w: 1) },
+  // 数字段: 1..0 - ^ ¥  (¥=93)
+  [18,19,20,21,23,22,26,28,25,29,27,24,93].map { KeyDef(kc: $0, w: 1) } + [KeyDef(kc: 51, w: 1.3)],
+  // QWERTY段: Q..P @ [   (@=33, [=30) ※ISO型Enter のため段末はここまで
+  [KeyDef(kc: 48, w: 1.6)] + [12,13,14,15,17,16,32,34,31,35,33,30].map { KeyDef(kc: $0, w: 1) },
+  // ホーム段: A..L ; : ]  (:=39, ]=42 が JIS ではここ)。Enter は ISO型(縦長)なので別途オーバーレイ。
+  [KeyDef(kc: 57, w: 1.6)] + [0,1,2,3,5,4,38,40,37,41,39,42].map { KeyDef(kc: $0, w: 1) },
+  // 下段: Z..M , . / _  (_=94)
+  [KeyDef(kc: 56, w: 2.0)] + [6,7,8,9,11,45,46,43,47,44].map { KeyDef(kc: $0, w: 1) }
+    + [KeyDef(kc: 94, w: 1), KeyDef(kc: 60, w: 1.6)],
+  // 最下段: fn ⌃ ⌥ ⌘ 英数 [space] かな ⌘ ⌥ ←↓↑→  (英数=102, かな=104)
+  [KeyDef(kc: 63, w: 1), KeyDef(kc: 59, w: 1), KeyDef(kc: 58, w: 1), KeyDef(kc: 55, w: 1.2),
+   KeyDef(kc: 102, w: 1.3), KeyDef(kc: 49, w: 3.4), KeyDef(kc: 104, w: 1.3), KeyDef(kc: 54, w: 1.2),
+   KeyDef(kc: 61, w: 1), KeyDef(kc: 123, w: 1), KeyDef(kc: 125, w: 1), KeyDef(kc: 126, w: 1), KeyDef(kc: 124, w: 1)],
 ]
 
 // MARK: - テーマ (Zenn 風: 白基調 + #3EA8FF アクセント + 角丸カード)
@@ -179,15 +198,18 @@ struct KeyCap: View {
   let def: KeyDef
   let n: Int
   let maxKey: Int
+  var jis = false
+  var tall: CGFloat? = nil          // ISO型 Enter など縦長キー用の高さ上書き
   static let unit: CGFloat = 46
   static let h: CGFloat = 42
+  static let gap: CGFloat = 4       // 行/キー間スペース(レイアウト計算にも使う)
   var body: some View {
     let w = Self.unit * def.w
     VStack(spacing: 1) {
-      Text(label(def.kc)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+      Text(label(def.kc, jis: jis)).font(.system(size: 11, weight: .medium)).lineLimit(1)
       Text(n > 0 ? "\(n)" : "").font(.system(size: 9)).opacity(0.85)
     }
-    .frame(width: w, height: Self.h)
+    .frame(width: w, height: tall ?? Self.h)
     .background(heatColor(n, max: maxKey))
     .foregroundStyle(keyFg)
     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -203,14 +225,24 @@ struct KeyCap: View {
 struct Keyboard: View {
   let perKey: [Int: Int]
   let maxKey: Int
+  let layout: [[KeyDef]]
+  let jis: Bool
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: KeyCap.gap) {
       ForEach(Array(layout.enumerated()), id: \.offset) { _, row in
-        HStack(spacing: 4) {
+        HStack(spacing: KeyCap.gap) {
           ForEach(Array(row.enumerated()), id: \.offset) { _, k in
-            KeyCap(def: k, n: perKey[k.kc] ?? 0, maxKey: maxKey)
+            KeyCap(def: k, n: perKey[k.kc] ?? 0, maxKey: maxKey, jis: jis)
           }
         }
+      }
+    }
+    // JIS は ISO型 Enter(縦長: QWERTY段〜ホーム段をぶち抜き)を右端にオーバーレイ。
+    .overlay(alignment: .topLeading) {
+      if jis {
+        let U = KeyCap.unit, H = KeyCap.h, G = KeyCap.gap
+        KeyCap(def: KeyDef(kc: 36, w: 1.3), n: perKey[36] ?? 0, maxKey: maxKey, jis: true, tall: 2 * H + G)
+          .offset(x: 13.6 * U + 13 * G, y: 2 * (H + G))   // ホーム段の右端・QWERTY段の高さから
       }
     }
   }
@@ -334,6 +366,7 @@ final class Model: ObservableObject {
   @Published var topKeys: [(Int, Int)] = []
   @Published var kbTypes: [(Int, Int)] = []
   @Published var typing = TypingSummary(activeMs: 0, keys: 0, peakKpm: 0)
+  @Published var hasJISKeys = false   // データに JIS 専用キーの打鍵があるか(配列自動判定用)
 
   private let s = Store()   // 接続を使い回す(毎回開くと fd リークで枯渇→GUIが落ちる)
 
@@ -355,6 +388,7 @@ final class Model: ObservableObject {
     topKeys = s.topKeys(12, sinceHour: sh)
     kbTypes = s.perKbType(sinceHour: sh)
     typing = s.typingSummary(sinceHour: sh)
+    hasJISKeys = s.hasJISKeys()
   }
 
   var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
@@ -381,12 +415,18 @@ func kbTypeLabel(_ t: Int) -> String {
   }
 }
 
+// キーボード配列の指定。auto=データ/言語から推定、ansi/jis=手動固定。
+enum LayoutPref: String, CaseIterable { case auto, ansi, jis }
+
 // 言語などのアプリ全体設定。切替で SwiftUI を再描画するため ObservableObject。
 @MainActor
 final class AppSettings: ObservableObject {
   static let shared = AppSettings()
   @Published var lang: Lang = L10n.current
+  @Published var layoutPref: LayoutPref =
+    UserDefaults.standard.string(forKey: "kbLayout").flatMap(LayoutPref.init) ?? .auto
   func setLang(_ l: Lang) { L10n.set(l); lang = l }
+  func setLayout(_ p: LayoutPref) { layoutPref = p; UserDefaults.standard.set(p.rawValue, forKey: "kbLayout") }
 }
 
 // アプリ内アップデート(手動)。GitHub Releases の最新版を確認し、ボタンで適用する。
@@ -487,7 +527,8 @@ struct DashboardView: View {
                    sub: L10n.t("sub.deletes", model.deletes.formatted()))
         }
         Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
-          Keyboard(perKey: model.perKey, maxKey: model.maxKey)
+          Keyboard(perKey: model.perKey, maxKey: model.maxKey,
+                   layout: useJIS ? jisLayout : ansiLayout, jis: useJIS)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         HStack(alignment: .top, spacing: 16) {
@@ -587,6 +628,23 @@ struct DashboardView: View {
   private func pct(_ a: Int, _ b: Int) -> String {
     b > 0 ? String(format: "%.0f%%", Double(a) / Double(b) * 100) : "0%"
   }
+
+  // 使用する配列。auto は「データにJIS専用キーあり → JIS確定」、無ければ言語/地域から推定。
+  private var useJIS: Bool {
+    switch settings.layoutPref {
+    case .ansi: return false
+    case .jis:  return true
+    case .auto: return model.hasJISKeys || Self.isJapaneseLocale(appLang: settings.lang)
+    }
+  }
+
+  // 言語・地域から日本語環境かを推定(en-JP のように UI が英語でも日本在住なら JIS 既定が自然)。
+  static func isJapaneseLocale(appLang: Lang) -> Bool {
+    if appLang == .ja { return true }                                    // アプリ言語=日本語
+    if Locale.preferredLanguages.contains(where: { $0.lowercased().hasPrefix("ja") }) { return true } // 優先言語に日本語
+    if Locale.current.region?.identifier == "JP" { return true }         // 地域=日本
+    return false
+  }
 }
 
 // MARK: - AppKit bootstrap (メニューバー常駐 + オンデマンドでウィンドウ)
@@ -643,6 +701,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     langItem.submenu = langMenu
     menu.addItem(langItem)
+    // キーボード配列サブメニュー(自動 + ANSI/JIS 手動)
+    let layoutItem = NSMenuItem(title: L10n.t("menu.layout"), action: nil, keyEquivalent: "")
+    let layoutMenu = NSMenu()
+    for pref in LayoutPref.allCases {
+      let it = NSMenuItem(title: L10n.t("layout.\(pref.rawValue)"), action: #selector(selectLayout(_:)), keyEquivalent: "")
+      it.representedObject = pref.rawValue
+      it.state = (pref == AppSettings.shared.layoutPref) ? .on : .off
+      layoutMenu.addItem(it)
+    }
+    layoutItem.submenu = layoutMenu
+    menu.addItem(layoutItem)
     menu.addItem(.separator())
     menu.addItem(withTitle: L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     return menu
@@ -652,6 +721,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     guard let raw = sender.representedObject as? String, let lang = Lang(rawValue: raw) else { return }
     AppSettings.shared.setLang(lang)   // L10n.current 更新 + GUI 再描画
     statusItem.menu = buildMenu()      // メニュー自身も再構築(ラベル/チェック更新)
+  }
+
+  @objc func selectLayout(_ sender: NSMenuItem) {
+    guard let raw = sender.representedObject as? String, let pref = LayoutPref(rawValue: raw) else { return }
+    AppSettings.shared.setLayout(pref)   // ダッシュボードのヒートマップに反映
+    statusItem.menu = buildMenu()        // チェック更新
   }
 
   private func setupWindow() {

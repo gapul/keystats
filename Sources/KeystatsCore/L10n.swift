@@ -155,6 +155,10 @@ public enum L10n {
     "menu.checkUpdate":  [.ja: "アップデートを確認",   .en: "Check for updates"],
     "menu.autoUpdate":   [.ja: "自動アップデート",     .en: "Auto-update"],
     "menu.language":     [.ja: "言語",                 .en: "Language"],
+    "menu.layout":       [.ja: "キーボード配列",       .en: "Keyboard layout"],
+    "layout.auto":       [.ja: "自動",                 .en: "Auto"],
+    "layout.ansi":       [.ja: "ANSI (US)",            .en: "ANSI (US)"],
+    "layout.jis":        [.ja: "JIS (日本語)",         .en: "JIS (Japanese)"],
     "menu.quit":         [.ja: "keystats を終了",      .en: "Quit keystats"],
 
     // --- GUI: alerts ---

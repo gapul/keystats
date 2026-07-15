@@ -2,7 +2,9 @@
 # Keystats インストーラ(ビルド不要)。アプリ本体は隣の .payload/Keystats.app。
 # 右クリック→開く で実行(初回だけ。Gatekeeper回避)。
 set -euo pipefail
-cd "$(dirname "$0")"
+# スクリプト自身の実ディレクトリへ確実に移動(相対起動/シンボリックリンク/別cwd でも)。
+SELF="$0"; case "$SELF" in /*) : ;; *) SELF="$PWD/$SELF" ;; esac
+cd "$(cd "$(dirname "$SELF")" && pwd -P)"
 
 B=$'\033[1m'; G=$'\033[32m'; C=$'\033[36m'; RED=$'\033[31m'; DIM=$'\033[2m'; R=$'\033[0m'
 step() { printf "\n${B}${C}▸ %s${R}\n" "$*"; }
@@ -20,8 +22,11 @@ printf "${B}  ⌨  Keystats インストーラ${R}\n"
 printf "  ${DIM}打鍵アナリティクス — キーコードとアプリ名だけ記録。テキスト本文は保存しません。${R}\n"
 printf "  ────────────────────────────────────────────\n"
 
-if [ ! -d "$APP_SRC" ]; then
-  printf "${RED}  Keystats.app が見つかりません（zipを展開してから実行してください）${R}\n"
+if [ ! -d "$APP_SRC/Contents/MacOS" ]; then
+  printf "${RED}  Keystats.app が見つかりません（またはファイルが未ダウンロード）${R}\n"
+  printf "  ${DIM}現在地: $(pwd)${R}\n"
+  printf "  ${DIM}zip を Finder で展開し、展開先フォルダ内の「Keystatsをインストール」を実行してください。${R}\n"
+  printf "  ${DIM}iCloud「デスクトップと書類」内だと中身が未ダウンロードの場合があります → フォルダを一旦ダウンロードフォルダなどに移してから実行。${R}\n"
   read -r -p "  Enter で閉じます " _; exit 1
 fi
 
@@ -31,6 +36,12 @@ for l in net.gapul.keystats net.gapul.keystats.gui net.gapul.keystats.update; do
   launchctl bootout "gui/$uid/$l" 2>/dev/null || true
 done
 mkdir -p "$HOME/Applications"; rm -rf "$APP"; cp -R "$APP_SRC" "$APP"
+# 配置を検証(iCloud未材料化/権限などで失敗したら黙って進めない)
+if [ ! -x "$APP/Contents/MacOS/KeystatsGUI" ] || [ ! -x "$APP/Contents/MacOS/keystatsd" ]; then
+  printf "${RED}  配置に失敗しました: $APP${R}\n"
+  printf "  ${DIM}フォルダを別の場所(例: ~/Downloads)に移してから、もう一度実行してください。${R}\n"
+  read -r -p "  Enter で閉じます " _; exit 1
+fi
 ok "~/Applications/Keystats.app"
 
 step "常駐サービスを登録"

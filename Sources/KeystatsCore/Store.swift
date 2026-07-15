@@ -37,9 +37,31 @@ public let keyName: [Int: String] = [
   100:"F8",101:"F9",103:"F11",105:"F13",107:"F14",109:"F10",111:"F12",113:"F15",
   114:"Help",115:"Home",116:"PageUp",117:"FwdDel",118:"F4",119:"End",120:"F2",
   121:"PageDown",122:"F1",123:"←",124:"→",125:"↓",126:"↑",
+  // JIS 特有キー(ANSI 環境でも押されれば記録されるので基本辞書にも入れておく)
+  93:"¥",94:"_",95:"KP,",102:"英数",104:"かな",
+]
+
+// JIS 配列で ANSI と刻印が異なるキー(キーコードは物理位置で共通、表示だけ違う)。
+public let keyNameJIS: [Int: String] = [
+  24:"^", 33:"@", 30:"[", 42:"]", 39:":", 93:"¥", 94:"_", 95:"KP,", 102:"英数", 104:"かな",
 ]
 
 public func label(_ keycode: Int) -> String { keyName[keycode] ?? "kc\(keycode)" }
+
+/// JIS 配列なら刻印差を反映したラベル。ヒートマップ表示用。
+public func label(_ keycode: Int, jis: Bool) -> String {
+  if jis, let j = keyNameJIS[keycode] { return j }
+  return label(keycode)
+}
+
+/// データに JIS 専用キー(英数/かな/¥/_)の打鍵があるか(配列自動判定用)。
+extension Store {
+  public func hasJISKeys() -> Bool {
+    var found = false
+    query("SELECT 1 FROM counts WHERE keycode IN (93,94,102,104) LIMIT 1;") { _ in found = true }
+    return found
+  }
+}
 
 public struct AppCount { public let app: String; public let n: Int }
 public struct ComboCount { public let combo: String; public let n: Int }
