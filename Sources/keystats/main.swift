@@ -159,11 +159,21 @@ func runDaemon() {
       }
     case .flagsChanged:
       let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
+      var pressed = false
       if kc == 57 {                       // Caps Lock は押下ごとに1回
-        recordKey(kc)
+        pressed = true
       } else if modKeys.contains(kc) {    // Shift/Control/Option/Command/Fn
-        if downMods.contains(kc) { downMods.remove(kc) }   // 離した → 数えない
-        else { downMods.insert(kc); recordKey(kc) }        // 押した → 1回
+        if downMods.contains(kc) { downMods.remove(kc) }         // 離した → 数えない
+        else { downMods.insert(kc); pressed = true }             // 押した → 1回
+      }
+      if pressed {
+        recordKey(kc)
+        // 修飾キーもキーボード別に記録(flagsChanged なので keyDown 側では拾えない)
+        let kbt = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
+        let hour = Int(Date().timeIntervalSince1970) / 3600
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        globalStore?.bumpKbType(hour: hour, kbtype: kbt)
+        globalStore?.bumpCountKb(hour: hour, keycode: kc, app: app, kbtype: kbt)
       }
     default:
       break
