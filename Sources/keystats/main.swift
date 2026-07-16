@@ -33,9 +33,8 @@ nonisolated(unsafe) var recentKeyTimes: [Double] = []   // 移動窓に入る直
 
 // 前打鍵からの間隔を「アクティブ打鍵時間」として積み、移動窓でピークKPMを算出。
 // 修正打鍵(Delete)は除外 = 打ち間違いの分だけ速く見えるのを防ぐ。
-@inline(__always) func recordTyping(_ keycode: Int) {
+@inline(__always) func recordTyping(_ keycode: Int, now: Double, app: String) {
   guard !correctionKeys.contains(keycode) else { return }
-  let now = Date().timeIntervalSince1970
   let gap = now - lastKeyTime
   defer { lastKeyTime = now }
   guard lastKeyTime > 0, gap > 0, gap < activeGapMax else {
@@ -51,7 +50,9 @@ nonisolated(unsafe) var recentKeyTimes: [Double] = []   // 移動窓に入る直
     // 2秒以上の持続打鍵に限る = 瞬間的な連打で分母が極小になり暴発するのを防ぐ
     if span >= peakMinSpan { peakKpm = Int(Double(recentKeyTimes.count) / span * 60) }
   }
-  globalStore?.bumpTyping(hour: Int(now) / 3600, activeMs: Int(gap * 1000), peakKpm: peakKpm)
+  let hour = Int(now) / 3600, activeMs = Int(gap * 1000)
+  globalStore?.bumpTyping(hour: hour, activeMs: activeMs, peakKpm: peakKpm)
+  globalStore?.bumpTypingApp(hour: hour, app: app, activeMs: activeMs, peakKpm: peakKpm)
 }
 
 // 苦手キー: 修正(Backspace/前方削除/⌃H/⌘Z)の直前タイピングに等比減衰の重みを配分。
@@ -144,15 +145,15 @@ func runDaemon() {
       // 長押しのオートリピートは1打鍵として扱う(重複除外)
       if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
         let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let now = Date().timeIntervalSince1970
+        let hour = Int(now) / 3600
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         recordKey(kc)                              // 物理キーとしても数える
-        recordTyping(kc)                           // 入力速度(連続打鍵の間隔)。Delete は除外
+        recordTyping(kc, now: now, app: app)       // 入力速度(全体 + アプリ別)。Delete は除外
         recordComboIfNeeded(kc, event.flags)       // 修飾付きなら組み合わせも記録
         // キーボード種別 + キーボード別打鍵 + 苦手キー
         let kbt = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
-        let now = Date().timeIntervalSince1970
-        let hour = Int(now) / 3600
         globalStore?.bumpKbType(hour: hour, kbtype: kbt)
-        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         globalStore?.bumpCountKb(hour: hour, keycode: kc, app: app, kbtype: kbt)
         recordMistype(kc, event.flags, hour: hour, now: now)
       }
@@ -301,11 +302,49 @@ func showKey(_ arg: String) {
 
 func showApp(_ bundle: String) {
   let store = Store()
-  print("\(bundle)  \(store.totalCounts(app: bundle)) 打鍵")
+  let t = store.typingSummary(app: bundle)
+  print("\(bundle)  \(store.totalCounts(app: bundle)) 打鍵  \(t.avgKpm)/\(t.peakKpm) KPM(平均/ピーク)")
   print("  よく押すキー / top keys:")
   for (kc, n) in store.keyCounts(app: bundle).sorted(by: { $0.value > $1.value }).prefix(15) {
     print(String(format: "    %-8@ %8d", label(kc) as NSString, n))
   }
+}
+
+func showExport(_ format: String) {
+  let store = Store()
+  let pk = store.perKey()
+  if format == "csv" {
+    print("keycode,label,count")
+    for (kc, n) in pk.sorted(by: { $0.value > $1.value }) {
+      print("\(kc),\"\(label(kc).replacingOccurrences(of: "\"", with: "\"\""))\",\(n)")
+    }
+    return
+  }
+  let t = store.typingSummary()
+  var obj: [String: Any] = [:]
+  obj["total"] = store.total()
+  obj["byKey"]  = pk.sorted { $0.value > $1.value }.map { ["keycode": $0.key, "label": label($0.key), "count": $0.value] }
+  obj["byApp"]  = store.perApp().map { ["app": $0.app, "count": $0.n] }
+  obj["combos"] = store.topCombos(100).map { ["combo": $0.combo, "count": $0.n] }
+  obj["speed"]  = ["avgKpm": t.avgKpm, "peakKpm": t.peakKpm, "activeSeconds": t.activeSeconds]
+  obj["keyboards"] = store.perKbType().map { ["kbtype": $0.0, "layout": kbLayoutName($0.0), "count": $0.1] }
+  obj["weak"] = store.mistypeCounts().compactMap { (kc, w) -> [String: Any]? in
+    guard isTypingKey(kc) else { return nil }
+    let total = pk[kc] ?? 0; guard total >= 30 else { return nil }
+    return ["keycode": kc, "label": label(kc), "rate": w / Double(total) * 100, "weight": w]
+  }.sorted { ($0["rate"] as! Double) > ($1["rate"] as! Double) }
+  if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+     let s = String(data: data, encoding: .utf8) { print(s) }
+}
+
+func showPrune(_ daysArg: String) {
+  guard let days = Int(daysArg), days > 0 else { print("usage: keystats prune <days>"); return }
+  let store = Store()
+  let cutoff = (Int(Date().timeIntervalSince1970) - days * 86400) / 3600
+  let before = store.total()
+  store.prune(beforeHour: cutoff)
+  store.vacuum()
+  print("prune: \(days)日より古いデータを削除。総打鍵 \(before) → \(store.total())")
 }
 
 // MARK: - entry
@@ -321,6 +360,8 @@ case "weak":   showWeak(limit: args.count > 2 ? Int(args[2]) ?? 15 : 15)
 case "keyboards": showKeyboards()
 case "key":    if args.count > 2 { showKey(args[2]) } else { print("usage: keystats key <keycode|label>") }
 case "app":    if args.count > 2 { showApp(args[2]) } else { print("usage: keystats app <bundleid>") }
+case "export": showExport(args.count > 2 ? args[2] : "json")
+case "prune":  if args.count > 2 { showPrune(args[2]) } else { print("usage: keystats prune <days>") }
 case "where":  print(Paths.dbPath)
 default:
   print(L10n.t("cli.usage"))

@@ -98,6 +98,7 @@ public final class Store {
   private var typingUpsert: OpaquePointer?
   private var mistypeUpsert: OpaquePointer?
   private var countsKbUpsert: OpaquePointer?
+  private var typingAppUpsert: OpaquePointer?
   private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   public init(path: String = Paths.dbPath) {
@@ -204,6 +205,24 @@ public final class Store {
       INSERT INTO counts_kb (hour, keycode, app, kbtype, n) VALUES (?, ?, ?, ?, 1)
       ON CONFLICT(hour, keycode, app, kbtype) DO UPDATE SET n = n + 1;
     """, -1, &countsKbUpsert, nil)
+    // アプリ別の入力速度(typing の app 次元版)。アプリ詳細で平均/ピークKPMを出す。
+    exec("""
+      CREATE TABLE IF NOT EXISTS typing_app (
+        hour      INTEGER NOT NULL,
+        app       TEXT    NOT NULL,
+        active_ms INTEGER NOT NULL DEFAULT 0,
+        keys      INTEGER NOT NULL DEFAULT 0,
+        peak_kpm  INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, app)
+      ) WITHOUT ROWID;
+    """)
+    sqlite3_prepare_v2(handle, """
+      INSERT INTO typing_app (hour, app, active_ms, keys, peak_kpm) VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(hour, app) DO UPDATE SET
+        active_ms = active_ms + excluded.active_ms,
+        keys      = keys + 1,
+        peak_kpm  = MAX(peak_kpm, excluded.peak_kpm);
+    """, -1, &typingAppUpsert, nil)
   }
 
   deinit {   // 接続とプリペアド文を必ず解放(GUIが頻繁に生成するのでリークすると fd 枯渇→open失敗)
@@ -214,6 +233,7 @@ public final class Store {
     sqlite3_finalize(typingUpsert)
     sqlite3_finalize(mistypeUpsert)
     sqlite3_finalize(countsKbUpsert)
+    sqlite3_finalize(typingAppUpsert)
     sqlite3_close_v2(handle)
   }
 
@@ -273,6 +293,25 @@ public final class Store {
     sqlite3_bind_double(mistypeUpsert, 3, weight)
     sqlite3_step(mistypeUpsert)
   }
+
+  /// アプリ別の入力速度を記録。
+  public func bumpTypingApp(hour: Int, app: String, activeMs: Int, peakKpm: Int) {
+    guard let typingAppUpsert else { return }
+    sqlite3_reset(typingAppUpsert)
+    sqlite3_bind_int64(typingAppUpsert, 1, sqlite3_int64(hour))
+    sqlite3_bind_text(typingAppUpsert, 2, app, -1, Store.TRANSIENT)
+    sqlite3_bind_int64(typingAppUpsert, 3, sqlite3_int64(activeMs))
+    sqlite3_bind_int64(typingAppUpsert, 4, sqlite3_int64(peakKpm))
+    sqlite3_step(typingAppUpsert)
+  }
+
+  /// hour が beforeHour 未満の古いデータを全テーブルから削除(保持期間対策)。
+  public func prune(beforeHour: Int) {
+    for t in ["counts", "combos", "apptime", "kbtype", "typing", "mistype", "counts_kb", "typing_app"] {
+      exec("DELETE FROM \(t) WHERE hour < \(beforeHour);")
+    }
+  }
+  public func vacuum() { exec("VACUUM;") }
 
   /// キーボード別の打鍵を記録(kbtype 次元)。
   public func bumpCountKb(hour: Int, keycode: Int, app: String, kbtype: Int) {
@@ -393,11 +432,15 @@ public final class Store {
     return n
   }
 
-  /// 入力速度の集計(平均KPM・ピーク・実打鍵時間)。sinceHour で期間を絞る。
-  public func typingSummary(sinceHour: Int = 0) -> TypingSummary {
+  /// 入力速度の集計(平均KPM・ピーク・実打鍵時間)。app 指定で typing_app を、無指定で全体 typing を読む。
+  public func typingSummary(sinceHour: Int = 0, app: String? = nil) -> TypingSummary {
+    let table = app != nil ? "typing_app" : "typing"
+    var conds: [String] = []
+    if sinceHour > 0 { conds.append("hour >= \(sinceHour)") }
+    if let app { conds.append("app = '\(sqlEsc(app))'") }
+    let w = conds.isEmpty ? "" : " WHERE " + conds.joined(separator: " AND ")
     var a = 0, k = 0, p = 0
-    query("SELECT COALESCE(SUM(active_ms),0), COALESCE(SUM(keys),0), COALESCE(MAX(peak_kpm),0) FROM typing"
-          + since(sinceHour) + ";") {
+    query("SELECT COALESCE(SUM(active_ms),0), COALESCE(SUM(keys),0), COALESCE(MAX(peak_kpm),0) FROM \(table)\(w);") {
       a = Int(sqlite3_column_int64($0, 0)); k = Int(sqlite3_column_int64($0, 1)); p = Int(sqlite3_column_int64($0, 2))
     }
     return TypingSummary(activeMs: a, keys: k, peakKpm: p)

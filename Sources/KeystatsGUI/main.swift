@@ -482,6 +482,7 @@ final class DetailModel: ObservableObject {
   @Published var hourly = Array(repeating: 0, count: 24)
   @Published var weekday = Array(repeating: Array(repeating: 0, count: 24), count: 7)
   @Published var daily: [DayCount] = []
+  @Published var speed = TypingSummary(activeMs: 0, keys: 0, peakKpm: 0)   // アプリ別の入力速度
   private let s = Store()
 
   init(target: DetailTarget, period: Period) {
@@ -517,6 +518,7 @@ final class DetailModel: ObservableObject {
     hourly = s.hourlyCounts(offsetHours: off, sinceHour: sh, keycode: f.kc, app: f.app, kbtype: f.kbt)
     weekday = s.weekdayCounts(offsetHours: off, sinceHour: sh, keycode: f.kc, app: f.app, kbtype: f.kbt)
     daily = s.dailyCounts(days: 14, offsetHours: off, keycode: f.kc, app: f.app, kbtype: f.kbt)
+    if case .app(let a) = target { speed = s.typingSummary(sinceHour: sh, app: a) }   // アプリ別速度
   }
 
   var peakHour: Int { hourly.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0 }
@@ -600,6 +602,13 @@ struct DetailView: View {
       }
       chartsCards
     case .app, .keyboard:
+      if case .app = model.target {
+        HStack(spacing: 12) {
+          StatCard(label: L10n.t("stat.avgSpeed"), value: "\(model.speed.avgKpm)", sub: L10n.t("sub.kpmFlow"), accent: true)
+          StatCard(label: L10n.t("stat.peakSpeed"), value: "\(model.speed.peakKpm)", sub: L10n.t("sub.kpmPeak"))
+          StatCard(label: L10n.t("stat.activeTyping"), value: fmtDuration(model.speed.activeSeconds), sub: L10n.t("sub.activeReal"))
+        }
+      }
       Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
         Keyboard(perKey: model.perKey, maxKey: model.maxKey, layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
                  onTapKey: { onDrill(.key($0)) })
@@ -637,15 +646,31 @@ struct DetailView: View {
 }
 
 // 言語などのアプリ全体設定。切替で SwiftUI を再描画するため ObservableObject。
+// 外観の設定値。system = macOS のライト/ダークに追従。
+enum AppearancePref: String, CaseIterable { case system, light, dark }
+
 @MainActor
 final class AppSettings: ObservableObject {
   static let shared = AppSettings()
-  @Published var lang: Lang = L10n.current
+  @Published var lang: Lang = L10n.current          // 解決後の言語(useJIS 等が参照)
+  @Published var langPref: LangPref = L10n.pref      // 設定値(system/ja/en, picker 用)
   @Published var layoutPref: LayoutPref =
     UserDefaults.standard.string(forKey: "kbLayout").flatMap(LayoutPref.init) ?? .auto
+  @Published var appearance: AppearancePref =
+    UserDefaults.standard.string(forKey: "appearance").flatMap(AppearancePref.init) ?? .system
   @Published var pendingSettings = false   // メニュー「設定を開く」→ ダッシュボードが設定ページへ潜る
-  func setLang(_ l: Lang) { L10n.set(l); lang = l }
+
+  func setLangPref(_ p: LangPref) { L10n.apply(p); langPref = p; lang = L10n.current }
   func setLayout(_ p: LayoutPref) { layoutPref = p; UserDefaults.standard.set(p.rawValue, forKey: "kbLayout") }
+  func setAppearance(_ p: AppearancePref) {
+    appearance = p
+    UserDefaults.standard.set(p.rawValue, forKey: "appearance")
+    Self.applyAppearance(p)
+  }
+  // NSApp.appearance を差し替え(nil=システム追従)。Color.dyn がこれに追従する。
+  static func applyAppearance(_ p: AppearancePref) {
+    NSApp.appearance = p == .system ? nil : NSAppearance(named: p == .dark ? .darkAqua : .aqua)
+  }
 }
 
 // MARK: - 設定ページ(言語 / キーボード配列 / 自動アップデート)
@@ -668,10 +693,19 @@ struct SettingsView: View {
           Text(L10n.t("settings.title")).font(.system(size: 20, weight: .bold))
           Spacer()
         }
+        Card(title: L10n.t("settings.appearance"), icon: "circle.lefthalf.filled") {
+          Picker("", selection: Binding(get: { settings.appearance }, set: { settings.setAppearance($0) })) {
+            Text(L10n.t("appearance.system")).tag(AppearancePref.system)
+            Text(L10n.t("appearance.light")).tag(AppearancePref.light)
+            Text(L10n.t("appearance.dark")).tag(AppearancePref.dark)
+          }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 300)
+        }
         Card(title: L10n.t("menu.language"), icon: "globe") {
-          Picker("", selection: Binding(get: { settings.lang }, set: { settings.setLang($0) })) {
-            ForEach(Lang.allCases, id: \.self) { Text($0.displayName).tag($0) }
-          }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
+          Picker("", selection: Binding(get: { settings.langPref }, set: { settings.setLangPref($0) })) {
+            Text(L10n.t("lang.system")).tag(LangPref.system)
+            Text("日本語").tag(LangPref.ja)
+            Text("English").tag(LangPref.en)
+          }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 300)
         }
         Card(title: L10n.t("menu.layout"), icon: "keyboard") {
           Picker("", selection: Binding(get: { settings.layoutPref }, set: { settings.setLayout($0) })) {
@@ -944,6 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ n: Notification) {
     AppDelegate.shared = self
+    AppSettings.applyAppearance(AppSettings.shared.appearance)   // 保存された外観(ライト/ダーク/システム)を適用
     bootstrapAgents()          // 自分のバンドル位置から LaunchAgent を自己登録
     setupStatusItem()
     setupWindow()

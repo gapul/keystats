@@ -9,6 +9,9 @@ public enum Lang: String, CaseIterable, Sendable {
   public var displayName: String { self == .ja ? "日本語" : "English" }
 }
 
+// 言語の設定値。system = システム(ロケール)に追従。
+public enum LangPref: String, CaseIterable, Sendable { case system, ja, en }
+
 public enum L10n {
   private static let key = "lang"
 
@@ -38,6 +41,17 @@ public enum L10n {
   public static func set(_ lang: Lang) {
     current = lang
     UserDefaults.standard.set(lang.rawValue, forKey: key)
+  }
+
+  /// 現在の言語設定(system/ja/en)。保存値が Lang でなければ system 扱い。
+  public static var pref: LangPref {
+    LangPref(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system
+  }
+
+  /// 設定(system/ja/en)を適用。system はロケールに追従。
+  public static func apply(_ p: LangPref) {
+    UserDefaults.standard.set(p.rawValue, forKey: key)
+    current = (p == .system) ? systemLang() : (Lang(rawValue: p.rawValue) ?? systemLang())
   }
 
   /// キーから現在言語の文字列を引く。未定義は en → キーそのものにフォールバック。
@@ -84,7 +98,9 @@ public enum L10n {
           keystats weak [N]   苦手なキー(修正の直前率トップN)
           keystats keyboards  キーボード別打鍵数(ANSI/ISO/JIS)
           keystats key <k>    キー詳細(アプリ別/修飾連携)。k=キーコード or ラベル(例: A)
-          keystats app <id>   アプリ詳細(よく押すキー)。id=bundle id
+          keystats app <id>   アプリ詳細(よく押すキー/速度)。id=bundle id
+          keystats export [json|csv]  集計をエクスポート(標準出力)
+          keystats prune <days>       days日より古いデータを削除 + VACUUM
           keystats where      DBパス表示
         GUI は keystats-gui (別バイナリ / Keystats.app)
         """,
@@ -173,6 +189,11 @@ public enum L10n {
     "menu.language":     [.ja: "言語",                 .en: "Language"],
     "menu.settings":     [.ja: "設定を開く",           .en: "Open settings"],
     "settings.title":    [.ja: "設定",                 .en: "Settings"],
+    "settings.appearance":[.ja: "外観",                .en: "Appearance"],
+    "appearance.system": [.ja: "システム",             .en: "System"],
+    "appearance.light":  [.ja: "ライト",               .en: "Light"],
+    "appearance.dark":   [.ja: "ダーク",               .en: "Dark"],
+    "lang.system":       [.ja: "システム",             .en: "System"],
     "settings.layoutHint":    [.ja: "自動 = 実キーボードの種別やJIS専用キーの記録から判定",
                                .en: "Auto = detected from your keyboard type / JIS-only keys"],
     "settings.autoUpdateHint":[.ja: "GitHub の新しいリリースを1日1回確認して更新",
