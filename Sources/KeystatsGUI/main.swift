@@ -402,8 +402,9 @@ final class Model: ObservableObject {
     hasJISKeys = s.hasJISKeys()
     // 修正: Backspace/前方削除 + 取り消し(⌘Z)/Emacs風削除(⌃H)
     corrections = (pk[51] ?? 0) + (pk[117] ?? 0) + s.comboCount(Self.correctionCombos, sinceHour: sh)
-    // 苦手キー: 修正直前の重み / 総打鍵。打鍵の少ないキーはノイズ除外(閾値30)。
+    // 苦手キー: 修正直前の重み / 総打鍵。文字キーのみ・打鍵30未満はノイズ除外。
     weakKeys = s.mistypeCounts(sinceHour: sh).compactMap { (kc, w) -> (Int, Double, Double)? in
+      guard isTypingKey(kc) else { return nil }
       let total = pk[kc] ?? 0
       guard total >= 30 else { return nil }
       return (kc, w / Double(total) * 100, w)
@@ -457,6 +458,9 @@ enum DetailTarget: Identifiable, Hashable {
     }
   }
 }
+
+// ナビゲーション(潜る)のルート。詳細ドリルダウン + 設定ページ。
+enum Route: Hashable { case detail(DetailTarget), settings }
 
 // 組み合わせラベルから修飾記号を除いたキー部分("⌘⇧C" → "C")。
 func comboKeyPart(_ combo: String) -> String {
@@ -639,8 +643,53 @@ final class AppSettings: ObservableObject {
   @Published var lang: Lang = L10n.current
   @Published var layoutPref: LayoutPref =
     UserDefaults.standard.string(forKey: "kbLayout").flatMap(LayoutPref.init) ?? .auto
+  @Published var pendingSettings = false   // メニュー「設定を開く」→ ダッシュボードが設定ページへ潜る
   func setLang(_ l: Lang) { L10n.set(l); lang = l }
   func setLayout(_ p: LayoutPref) { layoutPref = p; UserDefaults.standard.set(p.rawValue, forKey: "kbLayout") }
+}
+
+// MARK: - 設定ページ(言語 / キーボード配列 / 自動アップデート)
+
+struct SettingsView: View {
+  @ObservedObject private var settings = AppSettings.shared
+  @Environment(\.dismiss) private var dismiss
+  @State private var autoUpdate = AppDelegate.shared?.autoUpdateEnabled ?? true
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(spacing: 10) {
+          Button { dismiss() } label: {
+            HStack(spacing: 3) { Image(systemName: "chevron.left"); Text(L10n.t("back")) }
+              .font(.system(size: 13, weight: .medium))
+          }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+          Divider().frame(height: 16)
+          Image(systemName: "gearshape.fill").foregroundStyle(Theme.accent).font(.system(size: 18))
+          Text(L10n.t("settings.title")).font(.system(size: 20, weight: .bold))
+          Spacer()
+        }
+        Card(title: L10n.t("menu.language"), icon: "globe") {
+          Picker("", selection: Binding(get: { settings.lang }, set: { settings.setLang($0) })) {
+            ForEach(Lang.allCases, id: \.self) { Text($0.displayName).tag($0) }
+          }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
+        }
+        Card(title: L10n.t("menu.layout"), icon: "keyboard") {
+          Picker("", selection: Binding(get: { settings.layoutPref }, set: { settings.setLayout($0) })) {
+            ForEach(LayoutPref.allCases, id: \.self) { Text(L10n.t("layout.\($0.rawValue)")).tag($0) }
+          }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320)
+          Text(L10n.t("settings.layoutHint")).font(.system(size: 11)).foregroundStyle(Theme.sub)
+        }
+        Card(title: L10n.t("menu.autoUpdate"), icon: "arrow.triangle.2.circlepath") {
+          Toggle(isOn: Binding(get: { autoUpdate }, set: { autoUpdate = $0; AppDelegate.shared?.setAutoUpdate($0) })) {
+            Text(L10n.t("settings.autoUpdateHint")).font(.system(size: 12)).foregroundStyle(Theme.sub)
+          }
+        }
+      }.padding(20)
+    }
+    .frame(minWidth: 520, minHeight: 460)
+    .background(Theme.bg)
+    .navigationBarBackButtonHidden(true)
+  }
 }
 
 // アプリ内アップデート(手動)。GitHub Releases の最新版を確認し、ボタンで適用する。
@@ -711,7 +760,7 @@ struct DashboardView: View {
   @ObservedObject var settings = AppSettings.shared   // 言語切替を監視して再描画
   @State private var live = true
   @State private var showUpdateConfirm = false
-  @State private var path: [DetailTarget] = []   // ドリルダウン(潜る)のナビゲーションスタック
+  @State private var path: [Route] = []   // 潜るナビゲーション(詳細ドリルダウン + 設定)
   private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
   var body: some View {
@@ -745,7 +794,7 @@ struct DashboardView: View {
         Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
           Keyboard(perKey: model.perKey, maxKey: model.maxKey,
                    layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
-                   onTapKey: { path.append(.key($0)) })
+                   onTapKey: { path.append(.detail(.key($0))) })
             .frame(maxWidth: .infinity, alignment: .center)
         }
         HStack(alignment: .top, spacing: 16) {
@@ -756,13 +805,13 @@ struct DashboardView: View {
         HStack(alignment: .top, spacing: 16) {
           Card(title: L10n.t("card.topKeys"), icon: "trophy") {
             BarList(rows: model.topKeys.map { (label($0.0, jis: useJIS), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true,
-                    onTap: { path.append(.key(model.topKeys[$0].0)) })
+                    onTap: { path.append(.detail(.key(model.topKeys[$0].0))) })
           }
           Card(title: L10n.t("card.weakKeys"), icon: "exclamationmark.triangle") {
             BarList(rows: model.weakKeys.map { (label($0.kc, jis: useJIS), Int(($0.rate * 100).rounded())) },
                     color: Theme.accent2, labelWidth: 64, rounded: true,
                     valueFmt: { String(format: "%.2f%%", Double($0) / 100) },
-                    onTap: { path.append(.key(model.weakKeys[$0].kc)) })
+                    onTap: { path.append(.detail(.key(model.weakKeys[$0].kc))) })
           }
         }
         Card(title: L10n.t("card.combos"), icon: "command") {
@@ -771,17 +820,17 @@ struct DashboardView: View {
         HStack(alignment: .top, spacing: 16) {
           Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
             BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
-                    onTap: { path.append(.app(model.apps[$0].app)) })
+                    onTap: { path.append(.detail(.app(model.apps[$0].app))) })
           }
           Card(title: L10n.t("card.appTime"), icon: "hourglass") {
             BarList(rows: model.appTime.prefix(12).map { (label: shortApp($0.app), n: $0.n) },
                     color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration,
-                    onTap: { path.append(.app(model.appTime[$0].app)) })
+                    onTap: { path.append(.detail(.app(model.appTime[$0].app))) })
           }
         }
         Card(title: L10n.t("card.kbType"), icon: "keyboard.badge.ellipsis") {
           BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150,
-                  onTap: { path.append(.keyboard(model.kbTypes[$0].0)) })
+                  onTap: { path.append(.detail(.keyboard(model.kbTypes[$0].0))) })
         }
       }
       .padding(20)
@@ -797,8 +846,16 @@ struct DashboardView: View {
     } message: {
       if case .available(let v) = updater.state { Text(L10n.t("update.confirmBody", v)) }
     }
-    .navigationDestination(for: DetailTarget.self) { t in
-      DetailView(target: t, period: model.period, useJIS: useJIS, onDrill: { path.append($0) })
+    .navigationDestination(for: Route.self) { route in
+      switch route {
+      case .detail(let t):
+        DetailView(target: t, period: model.period, useJIS: useJIS, onDrill: { path.append(.detail($0)) })
+      case .settings:
+        SettingsView()
+      }
+    }
+    .onChange(of: settings.pendingSettings) { v in
+      if v { path.append(.settings); settings.pendingSettings = false }   // メニューから設定へ
     }
     }
   }
@@ -822,6 +879,8 @@ struct DashboardView: View {
       }.buttonStyle(.bordered)
       Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
         .keyboardShortcut("r")
+      Button { path.append(.settings) } label: { Image(systemName: "gearshape") }
+        .keyboardShortcut(",")
     }
   }
 
@@ -878,11 +937,13 @@ struct DashboardView: View {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  static weak var shared: AppDelegate?   // 設定ページから自動アップデート等を呼ぶため
   var window: NSWindow!
   var statusItem: NSStatusItem!
   var statusTimer: Timer?
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    AppDelegate.shared = self
     bootstrapAgents()          // 自分のバンドル位置から LaunchAgent を自己登録
     setupStatusItem()
     setupWindow()
@@ -906,54 +967,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       b.image = img
       b.imagePosition = .imageLeading
     }
-    statusItem.menu = buildMenu()
+    let menu = NSMenu()
+    menu.delegate = self          // 開くたびに作り直す(言語変更にラベルを追従)
+    populateMenu(menu)
+    statusItem.menu = menu
   }
 
-  // メニューは言語切替で作り直す(項目ラベルを更新するため)。
-  private func buildMenu() -> NSMenu {
-    let menu = NSMenu()
+  // メニュー項目を(再)構築。言語変更でラベルが変わるため menuNeedsUpdate から呼び直す。
+  private func populateMenu(_ menu: NSMenu) {
+    menu.removeAllItems()
     menu.addItem(withTitle: L10n.t("menu.open"), action: #selector(showWindow), keyEquivalent: "")
     menu.addItem(withTitle: L10n.t("menu.checkUpdate"), action: #selector(checkUpdate), keyEquivalent: "")
-    let auto = NSMenuItem(title: L10n.t("menu.autoUpdate"), action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
-    auto.state = autoUpdateEnabled ? .on : .off
-    menu.addItem(auto)
-    // 言語サブメニュー(自動判定 + 手動切替)
-    let langItem = NSMenuItem(title: L10n.t("menu.language"), action: nil, keyEquivalent: "")
-    let langMenu = NSMenu()
-    for lang in Lang.allCases {
-      let it = NSMenuItem(title: lang.displayName, action: #selector(selectLang(_:)), keyEquivalent: "")
-      it.representedObject = lang.rawValue
-      it.state = (lang == L10n.current) ? .on : .off
-      langMenu.addItem(it)
-    }
-    langItem.submenu = langMenu
-    menu.addItem(langItem)
-    // キーボード配列サブメニュー(自動 + ANSI/JIS 手動)
-    let layoutItem = NSMenuItem(title: L10n.t("menu.layout"), action: nil, keyEquivalent: "")
-    let layoutMenu = NSMenu()
-    for pref in LayoutPref.allCases {
-      let it = NSMenuItem(title: L10n.t("layout.\(pref.rawValue)"), action: #selector(selectLayout(_:)), keyEquivalent: "")
-      it.representedObject = pref.rawValue
-      it.state = (pref == AppSettings.shared.layoutPref) ? .on : .off
-      layoutMenu.addItem(it)
-    }
-    layoutItem.submenu = layoutMenu
-    menu.addItem(layoutItem)
+    menu.addItem(withTitle: L10n.t("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
     menu.addItem(.separator())
     menu.addItem(withTitle: L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-    return menu
   }
 
-  @objc func selectLang(_ sender: NSMenuItem) {
-    guard let raw = sender.representedObject as? String, let lang = Lang(rawValue: raw) else { return }
-    AppSettings.shared.setLang(lang)   // L10n.current 更新 + GUI 再描画
-    statusItem.menu = buildMenu()      // メニュー自身も再構築(ラベル/チェック更新)
+  // 設定はダッシュボード内の設定ページで行う。メニューからはウィンドウを出して設定へ潜る。
+  @objc func openSettings() {
+    showWindow()
+    AppSettings.shared.pendingSettings = true
   }
 
-  @objc func selectLayout(_ sender: NSMenuItem) {
-    guard let raw = sender.representedObject as? String, let pref = LayoutPref(rawValue: raw) else { return }
-    AppSettings.shared.setLayout(pref)   // ダッシュボードのヒートマップに反映
-    statusItem.menu = buildMenu()        // チェック更新
+  // 自動アップデートの有効/無効(設定ページから呼ばれる)。launchd エージェントを付け外し。
+  func setAutoUpdate(_ enabled: Bool) {
+    autoUpdateEnabled = enabled
+    let url = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.update.plist")
+    applyAutoUpdate(enabled, updateURL: url)
   }
 
   private func setupWindow() {
@@ -1018,14 +1059,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var autoUpdateEnabled: Bool {
     get { UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true }
     set { UserDefaults.standard.set(newValue, forKey: "autoUpdate") }
-  }
-
-  @objc func toggleAutoUpdate(_ sender: NSMenuItem) {
-    autoUpdateEnabled.toggle()
-    sender.state = autoUpdateEnabled ? .on : .off
-    let url = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.update.plist")
-    applyAutoUpdate(autoUpdateEnabled, updateURL: url)
   }
 
   // MARK: LaunchAgent 自己登録(brew 等でアプリを置くだけでも動く / パスは設置先に自動追従)
@@ -1121,6 +1154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
     showWindow(); return true
   }
+}
+
+extension AppDelegate: NSMenuDelegate {
+  func menuNeedsUpdate(_ menu: NSMenu) { populateMenu(menu) }   // 開くたび現在言語で作り直す
 }
 
 let app = NSApplication.shared

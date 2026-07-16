@@ -48,6 +48,15 @@ public let keyNameJIS: [Int: String] = [
 
 public func label(_ keycode: Int) -> String { keyName[keycode] ?? "kc\(keycode)" }
 
+// 文字キー(苦手キー判定の対象)。文字・数字・記号のみ。修飾/Esc/Tab/Return/Delete/矢印/F/ナビ/テンキーは除外。
+public let typingKeycodes: Set<Int> = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17,   // 文字 A..T
+  31, 32, 34, 35, 37, 38, 40, 45, 46,                          // O U I P L J K N M
+  18, 19, 20, 21, 22, 23, 25, 26, 28, 29,                      // 数字 1..0
+  24, 27, 30, 33, 39, 41, 42, 43, 44, 47, 50, 93, 94,          // 記号 = - ] [ ' ; \ , / . ` ¥ _
+]
+public func isTypingKey(_ keycode: Int) -> Bool { typingKeycodes.contains(keycode) }
+
 /// JIS 配列なら刻印差を反映したラベル。ヒートマップ表示用。
 public func label(_ keycode: Int, jis: Bool) -> String {
   if jis, let j = keyNameJIS[keycode] { return j }

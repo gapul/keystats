@@ -22,5 +22,11 @@ let package = Package(
       dependencies: ["KeystatsCore"],
       linkerSettings: [.linkedLibrary("sqlite3")]
     ),
+    // コアロジックのテスト(集計 / 苦手キー / ラベル / L10n)
+    .testTarget(
+      name: "KeystatsCoreTests",
+      dependencies: ["KeystatsCore"],
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
   ]
 )

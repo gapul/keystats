@@ -66,6 +66,8 @@ public enum L10n {
     "cli.apps":             [.ja: "アプリ別打鍵数:",            .en: "Keystrokes by app:"],
     "cli.combos":           [.ja: "組み合わせキー トップ%d:",   .en: "Top %d shortcuts:"],
     "cli.speed.title":      [.ja: "入力速度",                   .en: "Typing speed"],
+    "cli.weak.title":       [.ja: "苦手なキー(修正直前率):",    .en: "Weak keys (pre-correction rate):"],
+    "cli.keyboards.title":  [.ja: "キーボード別:",              .en: "By keyboard:"],
     "cli.speed.avg":        [.ja: "  平均      : %d KPM (フロー中)",     .en: "  Average : %d KPM (in flow)"],
     "cli.speed.peak":       [.ja: "  ピーク    : %d KPM (最速バースト)", .en: "  Peak    : %d KPM (fastest burst)"],
     "cli.speed.active":     [.ja: "  実打鍵時間: %d 分",                 .en: "  Active  : %d min"],
@@ -74,22 +76,30 @@ public enum L10n {
     "cli.usage": [
       .ja: """
         keystats — 打鍵ヒートマップ収集
-          keystats run       常駐して記録 (デフォルト)
-          keystats top [N]   キー別トップN
-          keystats apps      アプリ別打鍵数
+          keystats run        常駐して記録 (デフォルト)
+          keystats top [N]    キー別トップN
+          keystats apps       アプリ別打鍵数
           keystats combos [N] 組み合わせキー(ショートカット)トップN
-          keystats speed     入力速度(平均/ピークKPM・実打鍵時間・修正率)
-          keystats where     DBパス表示
+          keystats speed      入力速度(平均/ピークKPM・実打鍵時間・修正率)
+          keystats weak [N]   苦手なキー(修正の直前率トップN)
+          keystats keyboards  キーボード別打鍵数(ANSI/ISO/JIS)
+          keystats key <k>    キー詳細(アプリ別/修飾連携)。k=キーコード or ラベル(例: A)
+          keystats app <id>   アプリ詳細(よく押すキー)。id=bundle id
+          keystats where      DBパス表示
         GUI は keystats-gui (別バイナリ / Keystats.app)
         """,
       .en: """
         keystats — keystroke heatmap collector
-          keystats run       run in background and record (default)
-          keystats top [N]   top N keys
-          keystats apps      keystrokes by app
+          keystats run        run in background and record (default)
+          keystats top [N]    top N keys
+          keystats apps       keystrokes by app
           keystats combos [N] top N shortcuts
-          keystats speed     typing speed (avg/peak KPM, active time, correction rate)
-          keystats where     show DB path
+          keystats speed      typing speed (avg/peak KPM, active time, correction rate)
+          keystats weak [N]   weak keys (top N by pre-correction rate)
+          keystats keyboards  keystrokes by keyboard (ANSI/ISO/JIS)
+          keystats key <k>    key detail (by app / with modifiers). k = keycode or label (e.g. A)
+          keystats app <id>   app detail (top keys). id = bundle id
+          keystats where      show DB path
         GUI is keystats-gui (separate binary / Keystats.app)
         """],
 
@@ -161,6 +171,12 @@ public enum L10n {
     "menu.checkUpdate":  [.ja: "アップデートを確認",   .en: "Check for updates"],
     "menu.autoUpdate":   [.ja: "自動アップデート",     .en: "Auto-update"],
     "menu.language":     [.ja: "言語",                 .en: "Language"],
+    "menu.settings":     [.ja: "設定を開く",           .en: "Open settings"],
+    "settings.title":    [.ja: "設定",                 .en: "Settings"],
+    "settings.layoutHint":    [.ja: "自動 = 実キーボードの種別やJIS専用キーの記録から判定",
+                               .en: "Auto = detected from your keyboard type / JIS-only keys"],
+    "settings.autoUpdateHint":[.ja: "GitHub の新しいリリースを1日1回確認して更新",
+                               .en: "Check GitHub for a new release once a day and update"],
     "menu.layout":       [.ja: "キーボード配列",       .en: "Keyboard layout"],
     "layout.auto":       [.ja: "自動",                 .en: "Auto"],
     "layout.ansi":       [.ja: "ANSI (US)",            .en: "ANSI (US)"],
