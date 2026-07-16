@@ -119,6 +119,7 @@ func dayLabel(_ day: Int) -> String {          // day = ローカル epoch 日�
 struct Card<Content: View>: View {
   var title: String? = nil
   var icon: String? = nil
+  var stretch = false          // true: 行内で最大高さに伸ばす(HStack を .fixedSize で使う前提)
   @ViewBuilder var content: () -> Content
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -135,7 +136,7 @@ struct Card<Content: View>: View {
       content()
     }
     .padding(16)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, maxHeight: stretch ? .infinity : nil, alignment: .topLeading)
     .background(Theme.card)
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
@@ -151,7 +152,7 @@ struct StatCard: View {
         .foregroundStyle(accent ? Theme.accent : Color.primary).lineLimit(1).minimumScaleFactor(0.6)
       if let sub { Text(sub).font(.system(size: 11)).foregroundStyle(Theme.sub).lineLimit(1) }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)   // 行内で高さを揃える(HStack は fixedSize)
     .padding(14)
     .background(Theme.card)
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -564,6 +565,7 @@ struct DetailView: View {
           StatCard(label: L10n.t("stat.peakHour"), value: L10n.t("hour.fmt", model.peakHour),
                    sub: L10n.t("sub.hourKeys", model.hourly[model.peakHour].formatted()))
         }
+        .fixedSize(horizontal: false, vertical: true)
         content
       }
       .padding(20)
@@ -608,6 +610,7 @@ struct DetailView: View {
           StatCard(label: L10n.t("stat.peakSpeed"), value: "\(model.speed.peakKpm)", sub: L10n.t("sub.kpmPeak"))
           StatCard(label: L10n.t("stat.activeTyping"), value: fmtDuration(model.speed.activeSeconds), sub: L10n.t("sub.activeReal"))
         }
+        .fixedSize(horizontal: false, vertical: true)
       }
       Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
         Keyboard(perKey: model.perKey, maxKey: model.maxKey, layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
@@ -615,21 +618,22 @@ struct DetailView: View {
           .frame(maxWidth: .infinity, alignment: .center)
       }
       HStack(alignment: .top, spacing: 16) {
-        Card(title: L10n.t("card.topKeys"), icon: "trophy") {
+        Card(title: L10n.t("card.topKeys"), icon: "trophy", stretch: true) {
           BarList(rows: model.topKeys.map { (label($0.0, jis: useJIS), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true,
                   onTap: { onDrill(.key(model.topKeys[$0].0)) })
         }
         if case .app = model.target {
-          Card(title: L10n.t("card.combos"), icon: "command") {
+          Card(title: L10n.t("card.combos"), icon: "command", stretch: true) {
             BarList(rows: model.combos.prefix(12).map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
           }
         } else {
-          Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
+          Card(title: L10n.t("card.appKeys"), icon: "app.badge", stretch: true) {
             BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
                     onTap: { onDrill(.app(model.apps[$0].app)) })
           }
         }
       }
+      .fixedSize(horizontal: false, vertical: true)
       chartsCards
     }
   }
@@ -637,9 +641,10 @@ struct DetailView: View {
   private var chartsCards: some View {
     Group {
       HStack(alignment: .top, spacing: 16) {
-        Card(title: L10n.t("card.hourly"), icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
-        Card(title: L10n.t("card.daily"), icon: "chart.bar") { DailyTrend(daily: model.daily) }
+        Card(title: L10n.t("card.hourly"), icon: "clock", stretch: true) { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
+        Card(title: L10n.t("card.daily"), icon: "chart.bar", stretch: true) { DailyTrend(daily: model.daily) }
       }
+      .fixedSize(horizontal: false, vertical: true)
       Card(title: L10n.t("card.weekday"), icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
     }
   }
@@ -817,6 +822,7 @@ struct DashboardView: View {
           StatCard(label: L10n.t("stat.topApp"), value: model.topAppName,
                    sub: L10n.t("sub.distinctKeys", model.distinctKeys))
         }
+        .fixedSize(horizontal: false, vertical: true)   // 4枚を同じ高さに揃える
         // 入力速度・精度(期間フィルタに追従)。速度は Delete を除外して算出。
         HStack(spacing: 12) {
           StatCard(label: L10n.t("stat.avgSpeed"), value: "\(model.typing.avgKpm)", sub: L10n.t("sub.kpmFlow"), accent: true)
@@ -825,6 +831,7 @@ struct DashboardView: View {
           StatCard(label: L10n.t("stat.correction"), value: String(format: "%.1f%%", model.correctionRate),
                    sub: L10n.t("sub.corrections", model.corrections.formatted()))
         }
+        .fixedSize(horizontal: false, vertical: true)
         Card(title: L10n.t("card.heatmap"), icon: "keyboard") {
           Keyboard(perKey: model.perKey, maxKey: model.maxKey,
                    layout: useJIS ? jisLayout : ansiLayout, jis: useJIS,
@@ -832,36 +839,39 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: L10n.t("card.hourly"), icon: "clock") { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
-          Card(title: L10n.t("card.daily"), icon: "chart.bar") { DailyTrend(daily: model.daily) }
+          Card(title: L10n.t("card.hourly"), icon: "clock", stretch: true) { HourlyChart(hourly: model.hourly, peak: model.peakHour) }
+          Card(title: L10n.t("card.daily"), icon: "chart.bar", stretch: true) { DailyTrend(daily: model.daily) }
         }
+        .fixedSize(horizontal: false, vertical: true)
         Card(title: L10n.t("card.weekday"), icon: "calendar") { WeekdayHeatmap(grid: model.weekday) }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: L10n.t("card.topKeys"), icon: "trophy") {
+          Card(title: L10n.t("card.topKeys"), icon: "trophy", stretch: true) {
             BarList(rows: model.topKeys.map { (label($0.0, jis: useJIS), $0.1) }, color: Theme.accent, labelWidth: 64, rounded: true,
                     onTap: { path.append(.detail(.key(model.topKeys[$0].0))) })
           }
-          Card(title: L10n.t("card.weakKeys"), icon: "exclamationmark.triangle") {
+          Card(title: L10n.t("card.weakKeys"), icon: "exclamationmark.triangle", stretch: true) {
             BarList(rows: model.weakKeys.map { (label($0.kc, jis: useJIS), Int(($0.rate * 100).rounded())) },
                     color: Theme.accent2, labelWidth: 64, rounded: true,
                     valueFmt: { String(format: "%.2f%%", Double($0) / 100) },
                     onTap: { path.append(.detail(.key(model.weakKeys[$0].kc))) })
           }
         }
+        .fixedSize(horizontal: false, vertical: true)
         Card(title: L10n.t("card.combos"), icon: "command") {
           BarList(rows: model.combos.map { ($0.combo, $0.n) }, color: Theme.accent2, labelWidth: 92, rounded: true)
         }
         HStack(alignment: .top, spacing: 16) {
-          Card(title: L10n.t("card.appKeys"), icon: "app.badge") {
+          Card(title: L10n.t("card.appKeys"), icon: "app.badge", stretch: true) {
             BarList(rows: model.apps.prefix(12).map { (shortApp($0.app), $0.n) }, color: Theme.accent, labelWidth: 150,
                     onTap: { path.append(.detail(.app(model.apps[$0].app))) })
           }
-          Card(title: L10n.t("card.appTime"), icon: "hourglass") {
+          Card(title: L10n.t("card.appTime"), icon: "hourglass", stretch: true) {
             BarList(rows: model.appTime.prefix(12).map { (label: shortApp($0.app), n: $0.n) },
                     color: Theme.accent2, labelWidth: 150, valueFmt: fmtDuration,
                     onTap: { path.append(.detail(.app(model.appTime[$0].app))) })
           }
         }
+        .fixedSize(horizontal: false, vertical: true)
         Card(title: L10n.t("card.kbType"), icon: "keyboard.badge.ellipsis") {
           BarList(rows: model.kbTypes.map { (kbTypeLabel($0.0), $0.1) }, color: Theme.accent, labelWidth: 150,
                   onTap: { path.append(.detail(.keyboard(model.kbTypes[$0].0))) })
