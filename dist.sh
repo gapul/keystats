@@ -12,12 +12,20 @@ REPO="gapul/keystats"
 STAGE="dist/keystats-$VERSION"
 ZIP="dist/keystats-$VERSION-macos-$ARCH.zip"
 
-# 専用10年自己署名 "Keystats Signing" を最優先(DR固定で更新後も権限維持)。無ければフォールバック。
-SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -p codesigning 2>/dev/null \
-  | awk -F'"' '/Keystats Signing/{print $2; exit}')}"
+# "Developer ID Application"(Gatekeeper通過+公証可、DRはTeam ID固定)を最優先。無ければ
+# 従来の10年自己署名 "Keystats Signing"、さらに Apple Development にフォールバック。
+SIGN_ID="${KEYSTATS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | awk -F'"' '/Developer ID Application/{print $2; exit}')}"
+[ -n "$SIGN_ID" ] || SIGN_ID="$(security find-identity -p codesigning 2>/dev/null \
+  | awk -F'"' '/Keystats Signing/{print $2; exit}')"
 [ -n "$SIGN_ID" ] || SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-  | awk -F'"' '/Developer ID Application|Apple Development/{print $2; exit}')"
-sign() { [ -n "$SIGN_ID" ] && codesign --force --sign "$SIGN_ID" --timestamp=none \
+  | awk -F'"' '/Apple Development/{print $2; exit}')"
+# Developer ID は hardened runtime + セキュアタイムスタンプ(公証の前提)。自己署名は不可。
+case "$SIGN_ID" in
+  *"Developer ID"*) SIGN_OPTS=(--options runtime --timestamp) ;;
+  *)                SIGN_OPTS=(--timestamp=none) ;;
+esac
+sign() { [ -n "$SIGN_ID" ] && codesign --force --sign "$SIGN_ID" "${SIGN_OPTS[@]}" \
   ${2:+--identifier "$2"} "$1" >/dev/null 2>&1 || true; }
 
 echo "==> build (release) v$VERSION"
@@ -55,6 +63,22 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 sign "$APP"
 codesign --verify --deep --strict "$APP" && echo "   app署名OK" || echo "   ※署名なし/検証NG"
+
+# ==> 公証(notarization): Developer ID 署名 かつ notarytool プロファイルがある時だけ実行。
+#     公証+staple 済みなら Gatekeeper を隔離付きでも通過 = cask の no_quarantine が不要になる。
+NOTARY_PROFILE="${KEYSTATS_NOTARY_PROFILE:-keystats-notary}"
+case "$SIGN_ID" in *"Developer ID"*) NOTARIZE=1 ;; *) NOTARIZE=0 ;; esac
+if [ "$NOTARIZE" = 1 ] && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  echo "==> notarize (submit & wait: 数分かかることあり)"
+  NDIR="$(mktemp -d)"; NZIP="$NDIR/Keystats.zip"
+  ditto -c -k --keepParent "$APP" "$NZIP"
+  xcrun notarytool submit "$NZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  echo "==> staple"
+  xcrun stapler staple "$APP" && xcrun stapler validate "$APP" && echo "   staple OK"
+  rm -rf "$NDIR"
+else
+  echo "==> notarize: スキップ (Developer ID 署名でない or notarytool プロファイル '$NOTARY_PROFILE' 未設定)"
+fi
 
 echo "==> bundle installer (分かりやすい名前 + カスタムアイコン)"
 INST="$STAGE/Keystatsをインストール.command"
