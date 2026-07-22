@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 配布アーカイブを作る: 署名済み Keystats.app + uninstall + README を zip 化。
+# 配布アーカイブを作る: 署名済み Keystats.app を zip 化。
 # 生成物: dist/keystats-<VERSION>-macos-<arch>.zip と その sha256。
 #   ./dist.sh            … zip を作るだけ
 #   ./dist.sh --release  … さらに GitHub Release を作成/更新して zip をアップロード
@@ -82,25 +82,6 @@ if [ "$NOTARIZE" = 1 ] && xcrun notarytool history --keychain-profile "$NOTARY_P
 else
   echo "==> notarize: スキップ (Developer ID 署名でない or notarytool プロファイル '$NOTARY_PROFILE' 未設定)"
 fi
-
-echo "==> bundle support files"
-UNINST="$STAGE/Keystatsをアンインストール.command"
-cp packaging/uninstall.command "$UNINST"
-cp packaging/README.txt        "$STAGE/お読みください.txt"
-chmod +x "$UNINST"
-
-# .command に Finder カスタムアイコンを付与(NSWorkspace setIcon)。
-seticon() {  # seticon <file> <png>
-  [ -f "$2" ] || return 0
-  osascript - "$1" "$2" >/dev/null 2>&1 <<'OSA' || true
-use framework "AppKit"
-on run {f, p}
-  set img to current application's NSImage's alloc's initWithContentsOfFile:p
-  current application's NSWorkspace's sharedWorkspace's setIcon:img forFile:f options:0
-end run
-OSA
-}
-seticon "$UNINST" icon/uninstaller-icon.png
 
 echo "==> zip"
 rm -f "$ZIP"

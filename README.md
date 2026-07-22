@@ -147,8 +147,9 @@ sqlite3 "$(keystats where)" "SELECT app, SUM(seconds)/60 AS min FROM apptime GRO
 
 ## アンインストール
 
-配布物の「Keystatsをアンインストール」/ `brew uninstall --zap keystats` / `./install.sh` 環境なら
-`uninstall.command` 相当。データ(`~/.local/share/keystats`)は明示的に消すまで残ります。
+アプリの設定ページ最下部にある「Keystatsをアンインストール…」から削除できます。
+データ(`~/.local/share/keystats`)は明示的に消すまで残ります。Homebrewから完全削除する場合は
+`brew uninstall --zap keystats`も利用できます。
 
 ## TODO
 
