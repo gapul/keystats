@@ -1135,12 +1135,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 決して自分から降りず、フォアグラウンド起動(手動/復元)の重複だけが引き下がる。
     // 通常の再オープンは applicationShouldHandleReopen が既存インスタンスの窓を出すので、
     // このガードで手動起動のUXは損なわれない。
-    if !CommandLine.arguments.contains("--background") {
+    do {
+      let background = CommandLine.arguments.contains("--background")
       let mePID = NSRunningApplication.current.processIdentifier
       let bid = Bundle.main.bundleIdentifier ?? "net.gapul.keystats.gui"
       let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
         .filter { $0.processIdentifier != mePID }
       if !others.isEmpty {
+        // 自己登録でRunAtLoadされた2個目は正常終了。ジョブ自体はロード済みで次回ログインに備える。
+        if background { NSApp.terminate(nil); return }
         let myPath = Bundle.main.bundleURL.standardizedFileURL.path
         let installed = myPath.hasPrefix("/Applications/")
           || myPath.hasPrefix(FileManager.default.homeDirectoryForCurrentUser
@@ -1319,6 +1322,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       try copy.run(); copy.waitUntilExit()
       guard copy.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
 
+      // 公証済みzipをDownloadsから開くと隔離属性もコピーされ、/Applications版まで
+      // App Translocationされてしまう。移動先だけ解除し、直後の署名検証で完全性を確認する。
+      let xattr = Process(); xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+      xattr.arguments = ["-dr", "com.apple.quarantine", candidate.path]
+      try xattr.run(); xattr.waitUntilExit()
+      guard xattr.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+
       let verify = Process(); verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
       verify.arguments = ["--verify", "--deep", "--strict", candidate.path]
       verify.standardOutput = FileHandle.nullDevice; verify.standardError = FileHandle.nullDevice
@@ -1341,13 +1351,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
       try? fm.removeItem(at: backup)
 
-      // LaunchServicesは同じbundle idのApp Translocation版を再利用することがある。
-      // open -nで/Applications側を必ず別インスタンスとして起動し、新版の多重起動ガードに
-      // ダウンロード元プロセスを終了させる。
-      let opener = Process(); opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-      opener.arguments = ["-n", destination.path]
-      try opener.run(); opener.waitUntilExit()
-      guard opener.terminationStatus == 0 else { throw CocoaError(.fileNoSuchFile) }
+      // LaunchServicesはApp Translocation版を再利用するため、移動先の実行ファイルを直接起動する。
+      let installedGUI = destination.appendingPathComponent("Contents/MacOS/KeystatsGUI")
+      let opener = Process(); opener.executableURL = installedGUI
+      try opener.run()
       NSApp.terminate(nil)
     } catch {
       alert(L10n.t("install.failed"), error.localizedDescription)
@@ -1523,7 +1530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       + "<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ProcessType</key><string>Background</string>"
       + xdg
       + "<key>StandardOutPath</key><string>\(esc(dLog))</string><key>StandardErrorPath</key><string>\(esc(dLog))</string>")
-    write("net.gapul.keystats.gui",   // ログイン自動起動用。走っている自分は触らない
+    let gURL = write("net.gapul.keystats.gui",
       "<key>ProgramArguments</key><array><string>\(esc(app))/Contents/MacOS/KeystatsGUI</string><string>--background</string></array>"
       // KeepAlive: 異常終了(クラッシュ)時のみ再起動。ユーザーがメニューから終了(正常終了)したら再起動しない。
       + "<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>"
@@ -1537,6 +1544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 記録デーモンは未ロードなら起動(記録を止めないよう、既にロード済みなら触らない)
     if !agentLoaded("net.gapul.keystats") { launchctl(["bootstrap", "gui/\(uid)", dURL.path]) }
+    // 現在の手動起動とは別にログイン起動ジョブを登録。RunAtLoadされた重複は起動ガードが正常終了する。
+    if !agentLoaded("net.gapul.keystats.gui") { launchctl(["bootstrap", "gui/\(uid)", gURL.path]) }
     // 自動アップデートは設定に従う
     applyAutoUpdate(autoUpdateEnabled, updateURL: uURL)
 
