@@ -99,4 +99,11 @@ if [ "${1:-}" = "--release" ]; then
       --title "v$VERSION" --notes "keystats v$VERSION"
   fi
   echo "   sha256(cask用): $SHA"
+  echo "==> trigger Homebrew cask autobump"
+  if gh api --method POST repos/gapul/homebrew-keystats/dispatches \
+      -f event_type=keystats-release >/dev/null 2>&1; then
+    echo "   homebrew-keystats autobump を起動"
+  else
+    echo "   ※即時起動に失敗 (1時間ごとの定期実行で追従します)"
+  fi
 fi
