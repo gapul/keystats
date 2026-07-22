@@ -723,6 +723,11 @@ struct SettingsView: View {
             Text(L10n.t("settings.autoUpdateHint")).font(.system(size: 12)).foregroundStyle(Theme.sub)
           }
         }
+        Card(title: L10n.t("uninstall.title"), icon: "trash") {
+          Text(L10n.t("uninstall.body")).font(.system(size: 12)).foregroundStyle(Theme.sub)
+          Button(L10n.t("uninstall.button")) { AppDelegate.shared?.confirmUninstall() }
+            .buttonStyle(.bordered).tint(.red)
+        }
       }.padding(20)
     }
     .frame(minWidth: 520, minHeight: 460)
@@ -979,6 +984,40 @@ struct DashboardView: View {
 
 // MARK: - AppKit bootstrap (メニューバー常駐 + オンデマンドでウィンドウ)
 
+struct InstallLocationView: View {
+  let install: () -> Void
+  @State private var moving = false
+
+  var body: some View {
+    VStack(spacing: 24) {
+      Image(systemName: "arrow.down.app.fill")
+        .font(.system(size: 54, weight: .medium)).foregroundStyle(Theme.accent)
+      VStack(spacing: 8) {
+        Text(L10n.t("install.title")).font(.system(size: 28, weight: .bold))
+        Text(L10n.t("install.lead")).font(.system(size: 15)).foregroundStyle(Theme.sub)
+          .multilineTextAlignment(.center)
+      }
+      HStack(alignment: .top, spacing: 14) {
+        Image(systemName: "folder.fill").font(.system(size: 21)).foregroundStyle(Theme.accent)
+        Text(L10n.t("install.body")).font(.system(size: 13)).foregroundStyle(Theme.sub)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(18).background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 14))
+      Button {
+        moving = true; install()
+      } label: {
+        HStack(spacing: 8) {
+          if moving { ProgressView().controlSize(.small) }
+          Text(moving ? L10n.t("install.moving") : L10n.t("install.move"))
+        }
+      }
+      .buttonStyle(.borderedProminent).controlSize(.large).tint(Theme.accent).disabled(moving)
+    }
+    .padding(.horizontal, 48).padding(.top, 40).padding(.bottom, 32)
+    .frame(width: 600, height: 420, alignment: .top).background(Theme.bg)
+  }
+}
+
 struct OnboardingView: View {
   let permissionGranted: () -> Bool
   let openPermissionSettings: () -> Void
@@ -1068,11 +1107,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var statusTimer: Timer?
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    if ProcessInfo.processInfo.environment["KEYSTATS_PREVIEW_INSTALL"] == "1" {
+      AppDelegate.shared = self
+      AppSettings.applyAppearance(AppSettings.shared.appearance)
+      setupInstallLocationPreview()
+      showWindow()
+      return
+    }
     // 開発時の初回画面確認用。実際のLaunchAgent・権限・設定には触れない。
     if ProcessInfo.processInfo.environment["KEYSTATS_PREVIEW_ONBOARDING"] == "1" {
       AppDelegate.shared = self
       AppSettings.applyAppearance(AppSettings.shared.appearance)
       setupOnboardingPreview()
+      showWindow()
+      return
+    }
+    // zipから直接開いた場合は、常駐登録より先に安定した場所へ移す。
+    if shouldOfferApplicationMove {
+      AppDelegate.shared = self
+      AppSettings.applyAppearance(AppSettings.shared.appearance)
+      setupInstallLocationWindow()
       showWindow()
       return
     }
@@ -1084,14 +1138,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if !CommandLine.arguments.contains("--background") {
       let mePID = NSRunningApplication.current.processIdentifier
       let bid = Bundle.main.bundleIdentifier ?? "net.gapul.keystats.gui"
-      let dup = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
-        .contains { $0.processIdentifier != mePID }
-      if dup {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bid)
-          .first { $0.processIdentifier != mePID }?
-          .activate(options: [])               // 既存インスタンスを前面へ(手動起動時のUX維持)
-        NSApp.terminate(nil)
-        return
+      let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+        .filter { $0.processIdentifier != mePID }
+      if !others.isEmpty {
+        let myPath = Bundle.main.bundleURL.standardizedFileURL.path
+        let installed = myPath.hasPrefix("/Applications/")
+          || myPath.hasPrefix(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications").path + "/")
+        if installed, others.allSatisfy({ app in
+          guard let url = app.bundleURL?.standardizedFileURL else { return false }
+          return !url.path.hasPrefix("/Applications/")
+            && !url.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser
+              .appendingPathComponent("Applications").path + "/")
+        }) {
+          // 移動直後の新アプリを優先し、ダウンロード元で動く旧プロセスを終了する。
+          others.forEach { $0.terminate() }
+        } else {
+          others.first?.activate(options: [])   // 通常の重複起動は既存インスタンスを前面へ
+          NSApp.terminate(nil)
+          return
+        }
       }
     }
     AppDelegate.shared = self
@@ -1149,6 +1215,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     applyAutoUpdate(enabled, updateURL: url)
   }
 
+  func confirmUninstall() {
+    let a = NSAlert()
+    a.alertStyle = .warning
+    a.messageText = L10n.t("uninstall.confirm")
+    a.informativeText = L10n.t("uninstall.confirmBody")
+    a.addButton(withTitle: L10n.t("uninstall.action"))
+    a.addButton(withTitle: L10n.t("alert.cancel"))
+    guard a.runModal() == .alertFirstButtonReturn else { return }
+
+    guard let bundled = Bundle.main.resourceURL?.appendingPathComponent("keystats-uninstall"),
+          FileManager.default.fileExists(atPath: bundled.path) else {
+      alert("Keystats", L10n.t("uninstall.failed")); return
+    }
+    let helper = FileManager.default.temporaryDirectory
+      .appendingPathComponent("keystats-uninstall-\(UUID().uuidString)")
+    do {
+      try FileManager.default.copyItem(at: bundled, to: helper)
+      let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/bash")
+      p.arguments = [helper.path, Bundle.main.bundleURL.standardizedFileURL.path]
+      try p.run()
+      NSApp.terminate(nil)
+    } catch {
+      try? FileManager.default.removeItem(at: helper)
+      alert("Keystats", error.localizedDescription)
+    }
+  }
+
   private func setupWindow() {
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
@@ -1174,6 +1267,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self?.alert("Preview", "実際の権限やデータは変更せず、修復ボタンの表示だけを確認しています。")
       },
       finish: { NSApp.terminate(nil) }, previewMode: true))
+  }
+
+  private var shouldOfferApplicationMove: Bool {
+    if ProcessInfo.processInfo.environment["KEYSTATS_SKIP_APP_MOVE"] == "1" { return false }
+    let url = Bundle.main.bundleURL.standardizedFileURL
+    guard url.pathExtension == "app" else { return false }
+    let path = url.path
+    let userApplications = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Applications", isDirectory: true).path + "/"
+    return !path.hasPrefix("/Applications/") && !path.hasPrefix(userApplications)
+  }
+
+  private func setupInstallLocationWindow() {
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 420),
+      styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+    window.title = "Keystats"
+    window.center(); window.isReleasedWhenClosed = false
+    window.contentView = NSHostingView(rootView: InstallLocationView(
+      install: { [weak self] in self?.moveToApplications() }))
+  }
+
+  private func setupInstallLocationPreview() {
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 420),
+      styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+    window.title = "Keystats — Install Preview"
+    window.center(); window.isReleasedWhenClosed = false
+    window.contentView = NSHostingView(rootView: InstallLocationView(install: { [weak self] in
+      self?.alert("Preview", "実際のアプリやデータは移動していません。")
+      self?.setupInstallLocationPreview(); self?.showWindow()
+    }))
+  }
+
+  private func moveToApplications() {
+    let fm = FileManager.default
+    let source = Bundle.main.bundleURL.standardizedFileURL
+    let systemApplications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    let userApplications = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+    let parent = fm.isWritableFile(atPath: systemApplications.path) ? systemApplications : userApplications
+    do {
+      try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+      let destination = parent.appendingPathComponent("Keystats.app", isDirectory: true)
+      let candidate = parent.appendingPathComponent(".Keystats.install.\(getpid()).app", isDirectory: true)
+      let backup = parent.appendingPathComponent(".Keystats.backup.\(getpid()).app", isDirectory: true)
+      try? fm.removeItem(at: candidate); try? fm.removeItem(at: backup)
+
+      let copy = Process(); copy.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+      copy.arguments = [source.path, candidate.path]
+      try copy.run(); copy.waitUntilExit()
+      guard copy.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+
+      let verify = Process(); verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+      verify.arguments = ["--verify", "--deep", "--strict", candidate.path]
+      verify.standardOutput = FileHandle.nullDevice; verify.standardError = FileHandle.nullDevice
+      try verify.run(); verify.waitUntilExit()
+      guard verify.terminationStatus == 0 else { throw CocoaError(.fileReadCorruptFile) }
+
+      // 同じbundle idの旧版を止め、既存アプリは差し替え完了まで退避する。
+      let uid = getuid()
+      for label in ["net.gapul.keystats", "net.gapul.keystats.gui", "net.gapul.keystats.update"] {
+        launchctl(["bootout", "gui/\(uid)/\(label)"])
+      }
+      for app in NSRunningApplication.runningApplications(withBundleIdentifier: "net.gapul.keystats.gui")
+        where app.processIdentifier != ProcessInfo.processInfo.processIdentifier { app.terminate() }
+
+      if fm.fileExists(atPath: destination.path) { try fm.moveItem(at: destination, to: backup) }
+      do { try fm.moveItem(at: candidate, to: destination) }
+      catch {
+        if fm.fileExists(atPath: backup.path) { try? fm.moveItem(at: backup, to: destination) }
+        throw error
+      }
+      try? fm.removeItem(at: backup)
+
+      let config = NSWorkspace.OpenConfiguration(); config.activates = true
+      NSWorkspace.shared.openApplication(at: destination, configuration: config) { [weak self] _, error in
+        Task { @MainActor in
+          if let error { self?.alert(L10n.t("install.failed"), error.localizedDescription) }
+          else { NSApp.terminate(nil) }
+        }
+      }
+    } catch {
+      alert(L10n.t("install.failed"), error.localizedDescription)
+      setupInstallLocationWindow(); showWindow()
+    }
   }
 
   private var needsOnboarding: Bool {

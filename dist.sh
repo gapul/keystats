@@ -45,6 +45,8 @@ cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 [ -f icon/MenuBarIcon@2x.png ]&& cp icon/MenuBarIcon@2x.png "$APP/Contents/Resources/MenuBarIcon@2x.png"
 cp packaging/keystats-update "$APP/Contents/Resources/keystats-update"
 chmod +x "$APP/Contents/Resources/keystats-update"
+cp packaging/keystats-uninstall "$APP/Contents/Resources/keystats-uninstall"
+chmod +x "$APP/Contents/Resources/keystats-uninstall"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

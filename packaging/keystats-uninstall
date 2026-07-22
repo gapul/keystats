@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# GUIから切り離して実行するアンインストールヘルパー。統計DBは削除しない。
+set -u
+APP="${1:?app path required}"
+uid="$(id -u)"
+sleep 1
+
+if [ "${KEYSTATS_UNINSTALL_NO_SERVICES:-0}" != "1" ]; then
+  for label in net.gapul.keystats net.gapul.keystats.gui net.gapul.keystats.update; do
+    launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  done
+fi
+
+LA="$HOME/Library/LaunchAgents"
+rm -f "$LA/net.gapul.keystats.plist" "$LA/net.gapul.keystats.gui.plist" \
+  "$LA/net.gapul.keystats.update.plist"
+rm -f "$HOME/.local/bin/keystats" "$HOME/.local/bin/keystats-gui" "$HOME/.local/bin/keystats-update"
+[ "${KEYSTATS_UNINSTALL_NO_SERVICES:-0}" = "1" ] \
+  || /usr/bin/tccutil reset ListenEvent net.gapul.keystats >/dev/null 2>&1 || true
+
+BREW="/opt/homebrew/bin/brew"
+if [ "${KEYSTATS_UNINSTALL_SKIP_BREW:-0}" != "1" ] \
+  && [ -x "$BREW" ] && "$BREW" list --cask keystats >/dev/null 2>&1; then
+  "$BREW" uninstall --cask keystats >/dev/null 2>&1 || true
+fi
+
+if [ -e "$APP" ]; then
+  mkdir -p "$HOME/.Trash"
+  trash="$HOME/.Trash/Keystats.app"
+  [ ! -e "$trash" ] || trash="$HOME/.Trash/Keystats-$(date +%Y%m%d-%H%M%S).app"
+  mv "$APP" "$trash" 2>/dev/null || true
+fi
+
+osascript -e 'display notification "統計データを残して削除しました" with title "Keystats"' >/dev/null 2>&1 || true
+rm -f "$0"

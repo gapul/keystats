@@ -67,6 +67,8 @@ cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # 自己アップデータ(バンドル同梱: 更新時に一緒に更新される)
 cp -f packaging/keystats-update "$APP/Contents/Resources/keystats-update"
 chmod +x "$APP/Contents/Resources/keystats-update"
+cp -f packaging/keystats-uninstall "$APP/Contents/Resources/keystats-uninstall"
+chmod +x "$APP/Contents/Resources/keystats-uninstall"
 cp -f packaging/keystats-update "$HOME/.local/bin/keystats-update"; chmod +x "$HOME/.local/bin/keystats-update"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
