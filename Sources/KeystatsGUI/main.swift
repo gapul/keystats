@@ -979,6 +979,87 @@ struct DashboardView: View {
 
 // MARK: - AppKit bootstrap (メニューバー常駐 + オンデマンドでウィンドウ)
 
+struct OnboardingView: View {
+  let permissionGranted: () -> Bool
+  let openPermissionSettings: () -> Void
+  let repairPermission: () -> Void
+  let finish: () -> Void
+  let previewMode: Bool
+  @State private var granted = false
+  @State private var showPermissionHelp = false
+  private let permissionTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+  var body: some View {
+    VStack(spacing: 24) {
+      Image(systemName: granted ? "checkmark.circle.fill" : "keyboard.fill")
+        .font(.system(size: 54, weight: .medium))
+        .foregroundStyle(granted ? Color.green : Theme.accent)
+
+      VStack(spacing: 8) {
+        Text(granted ? L10n.t("onboarding.ready.title") : L10n.t("onboarding.title"))
+          .font(.system(size: 28, weight: .bold))
+        Text(granted ? L10n.t("onboarding.ready.body") : L10n.t("onboarding.lead"))
+          .font(.system(size: 15)).foregroundStyle(Theme.sub).multilineTextAlignment(.center)
+      }
+
+      if !granted {
+        VStack(spacing: 0) {
+          onboardingRow(icon: "hand.raised.fill", title: L10n.t("onboarding.privacy.title"),
+                        body: L10n.t("onboarding.privacy.body"), done: true)
+          Divider().padding(.leading, 52)
+          onboardingRow(icon: "gearshape.fill", title: L10n.t("onboarding.permission.title"),
+                        body: L10n.t("onboarding.permission.body"), done: false)
+        }
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 14))
+      }
+
+      Button(granted ? L10n.t("onboarding.start") : L10n.t("onboarding.openSettings")) {
+        if granted { finish() }
+        else if previewMode { withAnimation { granted = true } }
+        else { openPermissionSettings() }
+      }
+      .buttonStyle(.borderedProminent).controlSize(.large).tint(Theme.accent)
+
+      if !granted {
+        VStack(spacing: 12) {
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text(L10n.t("onboarding.waiting")).font(.system(size: 12)).foregroundStyle(Theme.sub)
+          }
+          DisclosureGroup(L10n.t("onboarding.help.title"), isExpanded: $showPermissionHelp) {
+            VStack(alignment: .leading, spacing: 10) {
+              Text(L10n.t("onboarding.help.body"))
+                .font(.system(size: 12)).foregroundStyle(Theme.sub).fixedSize(horizontal: false, vertical: true)
+              Button(L10n.t("onboarding.help.repair")) { repairPermission() }
+                .buttonStyle(.bordered).controlSize(.small)
+            }.padding(.top, 8)
+          }
+          .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.sub)
+        }
+      }
+    }
+    .padding(.horizontal, 48).padding(.top, 32).padding(.bottom, 28)
+    .frame(width: 600, height: 500, alignment: .top)
+    .background(Theme.bg)
+    .onAppear { granted = permissionGranted() }
+    .onReceive(permissionTimer) { _ in
+      if !granted { withAnimation { granted = permissionGranted() } }
+    }
+  }
+
+  private func onboardingRow(icon: String, title: String, body: String, done: Bool) -> some View {
+    HStack(alignment: .top, spacing: 14) {
+      Image(systemName: done ? "checkmark.circle.fill" : icon)
+        .font(.system(size: 20)).foregroundStyle(done ? Color.green : Theme.accent).frame(width: 28)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title).font(.system(size: 14, weight: .semibold))
+        Text(body).font(.system(size: 12)).foregroundStyle(Theme.sub).fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer()
+    }.padding(16)
+  }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   static weak var shared: AppDelegate?   // 設定ページから自動アップデート等を呼ぶため
@@ -987,6 +1068,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var statusTimer: Timer?
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    // 開発時の初回画面確認用。実際のLaunchAgent・権限・設定には触れない。
+    if ProcessInfo.processInfo.environment["KEYSTATS_PREVIEW_ONBOARDING"] == "1" {
+      AppDelegate.shared = self
+      AppSettings.applyAppearance(AppSettings.shared.appearance)
+      setupOnboardingPreview()
+      showWindow()
+      return
+    }
+    // 多重起動ガード。ログイン時に launchd(--background) と macOS の状態復元/旧ログイン項目が
+    // 重なっても、2個目は静かに終了して常に1インスタンスに保つ。常駐する --background 版は
+    // 決して自分から降りず、フォアグラウンド起動(手動/復元)の重複だけが引き下がる。
+    // 通常の再オープンは applicationShouldHandleReopen が既存インスタンスの窓を出すので、
+    // このガードで手動起動のUXは損なわれない。
+    if !CommandLine.arguments.contains("--background") {
+      let mePID = NSRunningApplication.current.processIdentifier
+      let bid = Bundle.main.bundleIdentifier ?? "net.gapul.keystats.gui"
+      let dup = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+        .contains { $0.processIdentifier != mePID }
+      if dup {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+          .first { $0.processIdentifier != mePID }?
+          .activate(options: [])               // 既存インスタンスを前面へ(手動起動時のUX維持)
+        NSApp.terminate(nil)
+        return
+      }
+    }
     AppDelegate.shared = self
     AppSettings.applyAppearance(AppSettings.shared.appearance)   // 保存された外観(ライト/ダーク/システム)を適用
     bootstrapAgents()          // 自分のバンドル位置から LaunchAgent を自己登録
@@ -997,8 +1104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
       Task { @MainActor in self?.updateStatus() }          // macOS 13 でも動く形(assumeIsolatedは14+)
     }
-    // --background(ログイン起動)ならウィンドウは出さずメニューバーだけ
-    if !CommandLine.arguments.contains("--background") { showWindow() }
+    // 初回設定が済んでいなければ、ログイン起動でも案内を見失わないよう表示する。
+    if needsOnboarding || !CommandLine.arguments.contains("--background") { showWindow() }
   }
 
   private func setupStatusItem() {
@@ -1050,7 +1157,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     window.title = "keystats"
     window.center()
     window.isReleasedWhenClosed = false     // 閉じてもオブジェクトは残す(再表示するため)
+    showAppropriateContent()
+  }
+
+  private func setupOnboardingPreview() {
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
+      styleMask: [.titled, .closable, .miniaturizable],
+      backing: .buffered, defer: false)
+    window.title = "Keystats — Onboarding Preview"
+    window.center()
+    window.isReleasedWhenClosed = false
+    window.contentView = NSHostingView(rootView: OnboardingView(
+      permissionGranted: { false }, openPermissionSettings: {},
+      repairPermission: { [weak self] in
+        self?.alert("Preview", "実際の権限やデータは変更せず、修復ボタンの表示だけを確認しています。")
+      },
+      finish: { NSApp.terminate(nil) }, previewMode: true))
+  }
+
+  private var needsOnboarding: Bool {
+    !UserDefaults.standard.bool(forKey: "onboarded") || !inputMonitoringGranted()
+  }
+
+  private func showAppropriateContent() {
+    if needsOnboarding {
+      window.contentView = NSHostingView(rootView: OnboardingView(
+        permissionGranted: { [weak self] in self?.inputMonitoringGranted() ?? false },
+        openPermissionSettings: { [weak self] in self?.openInputMonitoringSettings() },
+        repairPermission: { [weak self] in self?.repairInputMonitoringPermission() },
+        finish: { [weak self] in self?.finishOnboarding() }, previewMode: false))
+    } else {
+      window.contentView = NSHostingView(rootView: DashboardView())
+    }
+  }
+
+  private func inputMonitoringGranted() -> Bool {
+    let daemon = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/keystatsd")
+    guard FileManager.default.isExecutableFile(atPath: daemon.path) else { return false }
+    let p = Process(); p.executableURL = daemon; p.arguments = ["permission"]
+    p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+    do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+  }
+
+  private func openInputMonitoringSettings() {
+    // 未許可で終了しているデーモンを一度起動し、macOSの一覧へ確実に登録する。
+    launchctl(["kickstart", "-k", "gui/\(getuid())/net.gapul.keystats"])
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+      NSWorkspace.shared.open(url)
+    }
+  }
+
+  private func repairInputMonitoringPermission() {
+    launchctl(["bootout", "gui/\(getuid())/net.gapul.keystats"])
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+    p.arguments = ["reset", "ListenEvent", "net.gapul.keystats"]
+    do {
+      try p.run(); p.waitUntilExit()
+      guard p.terminationStatus == 0 else {
+        alert("Keystats", L10n.t("onboarding.help.failed")); return
+      }
+      // plistは既に自己登録済み。再ロードしてmacOSの入力監視一覧へ登録し直す。
+      let plist = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/LaunchAgents/net.gapul.keystats.plist").path
+      launchctl(["bootstrap", "gui/\(getuid())", plist])
+      openInputMonitoringSettings()
+    } catch {
+      alert("Keystats", L10n.t("onboarding.help.failed"))
+    }
+  }
+
+  private func finishOnboarding() {
+    guard inputMonitoringGranted() else { return }
+    UserDefaults.standard.set(true, forKey: "onboarded")
+    launchctl(["kickstart", "-k", "gui/\(getuid())/net.gapul.keystats"])
     window.contentView = NSHostingView(rootView: DashboardView())
+    window.setContentSize(NSSize(width: 820, height: 620))
+    window.center()
   }
 
   @objc func showWindow() {
@@ -1177,13 +1361,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 自動アップデートは設定に従う
     applyAutoUpdate(autoUpdateEnabled, updateURL: uURL)
 
-    // 初回のみ入力監視パネルを開いて許可を促す
-    if !UserDefaults.standard.bool(forKey: "onboarded") {
-      UserDefaults.standard.set(true, forKey: "onboarded")
-      if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-        NSWorkspace.shared.open(u)
-      }
-    }
   }
 
   private let statusStore = Store()   // メニューバー用に接続を使い回す(fdリーク防止)

@@ -373,6 +373,11 @@ case "app":    if args.count > 2 { showApp(args[2]) } else { print("usage: keyst
 case "export": showExport(args.count > 2 ? args[2] : "json")
 case "prune":  if args.count > 2 { showPrune(args[2]) } else { print("usage: keystats prune <days>") }
 case "where":  print(Paths.dbPath)
+case "permission":
+  // インストーラなどから入力監視の状態を副作用なしで確認する。
+  // 許可済みなら 0、未許可なら 1 を返すのでシェルからそのまま判定できる。
+  if CGPreflightListenEventAccess() { print("granted") }
+  else { print("denied"); exit(1) }
 default:
   print(L10n.t("cli.usage"))
 }

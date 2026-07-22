@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# keystats 自己アップデータ。GitHub Releases の最新版を見て、新しければ
-# 「今この keystats-update が入っているアプリ自身」をその場で差し替える。
-# 設置先(/Applications でも ~/Applications でも)に追従。依存なし(curl/plutil/ditto)。
+# Keystats自己アップデータ。検証済みの新アプリを用意してから原子的に差し替え、
+# 失敗時は旧アプリへ戻す。DBや設定には触れない。
 #   keystats-update            … 新しければ更新
 #   keystats-update --check    … 確認だけ(exit 10 = 更新あり)
 set -euo pipefail
@@ -9,49 +8,124 @@ set -euo pipefail
 REPO="gapul/keystats"
 API="https://api.github.com/repos/$REPO/releases/latest"
 MODE="${1:-}"
-# 自分の位置(.../Keystats.app/Contents/Resources/keystats-update)からアプリのパスを導出
 APP="$(cd "$(dirname "$0")/../.." && pwd)"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/keystats"
+mkdir -p "$STATE"
 
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 notify() { osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
-ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }  # $1 >= $2 ?
+fail() { log "失敗: $*"; notify "Keystats アップデート失敗" "$*"; exit 1; }
+
+# launchdと手動確認が重なっても、更新処理は一つだけにする。
+LOCK="$STATE/update.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  old_pid="$(sed -n '1p' "$LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+    log "別のアップデート処理が実行中です (pid=$old_pid)"
+    exit 0
+  fi
+  rmdir "$LOCK" 2>/dev/null || fail "更新ロックを解除できません"
+  mkdir "$LOCK" 2>/dev/null || fail "更新ロックを取得できません"
+fi
+printf '%s\n' "$$" > "$LOCK/pid"
+
+tmp="$(mktemp -d -t keystats-update.XXXXXX)" || fail "一時フォルダを作成できません"
+stage=""
+backup=""
+cleanup() {
+  [ -z "$stage" ] || rm -rf "$stage"
+  [ -z "$backup" ] || rm -rf "$backup"
+  rm -rf "$tmp"
+  rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# 数字3要素のリリースバージョンをmacOS 13標準ツールだけで比較する。
+ver_ge() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a,x,"."); split(b,y,".");
+    for(i=1;i<=3;i++){ if((x[i]+0)>(y[i]+0))exit 0; if((x[i]+0)<(y[i]+0))exit 1 }
+    exit 0
+  }'
+}
 
 installed="$(defaults read "$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo 0.0.0)"
-
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-curl -fsSL "$API" -o "$tmp/rel.json" || { echo "リリース取得失敗"; exit 0; }
-tag="$(plutil -extract tag_name raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
+curl --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 -fsSL \
+  "$API" -o "$tmp/rel.json" || fail "最新版情報を取得できませんでした"
+tag="$(plutil -extract tag_name raw -o - "$tmp/rel.json" 2>/dev/null || true)"
 latest="${tag#v}"
-url="$(plutil -extract assets.0.browser_download_url raw -o - "$tmp/rel.json" 2>/dev/null || echo "")"
-[ -n "$latest" ] || { echo "リリースなし"; exit 0; }
+[ -n "$latest" ] || fail "リリースのバージョンを確認できませんでした"
 
 if ver_ge "$installed" "$latest"; then
-  echo "最新です (installed=$installed, latest=$latest)"
-  [ "$MODE" = "--check" ] && notify "keystats" "最新です ($installed)"
+  log "最新です (installed=$installed, latest=$latest)"
+  [ "$MODE" = "--check" ] && notify "Keystats" "最新です ($installed)"
   exit 0
 fi
 
-echo "更新あり: $installed → $latest"
-[ "$MODE" = "--check" ] && { notify "keystats" "新しいバージョン $latest があります"; exit 10; }
+log "更新あり: $installed → $latest"
+[ "$MODE" = "--check" ] && { notify "Keystats" "新しいバージョン $latest があります"; exit 10; }
 
-[ -n "$url" ] || { echo "配布URLなし"; exit 1; }
-echo "DL: $url"
-curl -fsSL "$url" -o "$tmp/pkg.zip"
-ditto -x -k "$tmp/pkg.zip" "$tmp/x"
-new="$(find "$tmp/x" -maxdepth 3 -name Keystats.app -type d | head -1)"
-[ -n "$new" ] || { echo "新Keystats.appが見つかりません"; exit 1; }
-xattr -dr com.apple.quarantine "$new" 2>/dev/null || true
+# 添付順には依存せず、OS/CPUに対応する正確なファイル名を選ぶ。
+asset="keystats-$latest-macos-$(uname -m).zip"
+url=""; digest=""; i=0
+while name="$(plutil -extract "assets.$i.name" raw -o - "$tmp/rel.json" 2>/dev/null)"; do
+  if [ "$name" = "$asset" ]; then
+    url="$(plutil -extract "assets.$i.browser_download_url" raw -o - "$tmp/rel.json" 2>/dev/null || true)"
+    digest="$(plutil -extract "assets.$i.digest" raw -o - "$tmp/rel.json" 2>/dev/null || true)"
+    break
+  fi
+  i=$((i + 1))
+done
+[ -n "$url" ] || fail "対応する配布ファイルがありません: $asset"
 
-echo "差し替え: $APP"
-rm -rf "$APP"; cp -R "$new" "$APP"          # 実行中でも inode は生きるので安全
+log "ダウンロード: $asset"
+curl --connect-timeout 10 --max-time 300 --retry 3 --retry-delay 2 -fsSL \
+  "$url" -o "$tmp/pkg.zip" || fail "配布ファイルをダウンロードできませんでした"
+case "$digest" in
+  sha256:*)
+    expected="${digest#sha256:}"
+    actual="$(shasum -a 256 "$tmp/pkg.zip" | awk '{print $1}')"
+    [ "$actual" = "$expected" ] || fail "配布ファイルのSHA-256が一致しません"
+    ;;
+  *) fail "リリースにSHA-256がありません" ;;
+esac
+
+mkdir -p "$tmp/x"
+ditto -x -k "$tmp/pkg.zip" "$tmp/x" || fail "配布ファイルを展開できませんでした"
+new="$(find "$tmp/x" -maxdepth 4 -name Keystats.app -type d -print -quit)"
+[ -n "$new" ] || fail "新しいKeystats.appが見つかりません"
+[ -x "$new/Contents/MacOS/KeystatsGUI" ] || fail "アプリ本体が不足しています"
+[ -x "$new/Contents/MacOS/keystatsd" ] || fail "記録サービスが不足しています"
+new_version="$(defaults read "$new/Contents/Info" CFBundleShortVersionString 2>/dev/null || true)"
+[ "$new_version" = "$latest" ] || fail "アプリのバージョンが一致しません ($new_version)"
+lipo -archs "$new/Contents/MacOS/KeystatsGUI" 2>/dev/null | tr ' ' '\n' | grep -qx "$(uname -m)" \
+  || fail "このMacに対応する実行ファイルではありません"
+codesign --verify --deep --strict "$new" >/dev/null 2>&1 || fail "アプリの署名を検証できません"
+
+# 現在のアプリと同じ場所に準備し、renameで短時間に切り替える。
+parent="$(dirname "$APP")"
+stage="$(mktemp -d "$parent/.keystats-stage.XXXXXX")" || fail "更新先へ書き込めません"
+candidate="$stage/Keystats.app"
+ditto "$new" "$candidate" || fail "新しいアプリを準備できません"
+codesign --verify --deep --strict "$candidate" >/dev/null 2>&1 || fail "コピー後の署名を検証できません"
 
 uid="$(id -u)"
-# 旧 daemon / GUI を止めてから新アプリを起動する。アプリが起動時に daemon/gui/update の
-# LaunchAgent を自己登録し直す(plist が消えていても再生成される = 堅い)。
-launchctl bootout "gui/$uid/net.gapul.keystats"     2>/dev/null || true
-launchctl bootout "gui/$uid/net.gapul.keystats.gui" 2>/dev/null || true
-pkill -f "Keystats.app/Contents/MacOS/KeystatsGUI"  2>/dev/null || true
-sleep 1
-open -g "$APP"                               # -g: 前面に出さずに起動 → 自己ブートストラップ
+if [ "${KEYSTATS_UPDATE_NO_RESTART:-0}" != "1" ]; then
+  launchctl bootout "gui/$uid/net.gapul.keystats" 2>/dev/null || true
+  launchctl bootout "gui/$uid/net.gapul.keystats.gui" 2>/dev/null || true
+  pkill -f "^$APP/Contents/MacOS/KeystatsGUI( |$)" 2>/dev/null || true
+fi
 
-echo "更新完了: $latest"
-notify "keystats" "$latest に更新しました"
+backup="$parent/.Keystats.backup.$$"
+if ! mv "$APP" "$backup"; then fail "現在のアプリを退避できません"; fi
+if ! mv "$candidate" "$APP"; then
+  mv "$backup" "$APP" 2>/dev/null || true
+  backup=""
+  [ "${KEYSTATS_UPDATE_NO_RESTART:-0}" = "1" ] || open -g "$APP" 2>/dev/null || true
+  fail "新しいアプリへ差し替えできませんでした（旧版へ戻しました）"
+fi
+rm -rf "$backup"; backup=""
+
+[ "${KEYSTATS_UPDATE_NO_RESTART:-0}" = "1" ] || open -g "$APP" || fail "更新後のアプリを起動できません"
+log "更新完了: $latest"
+notify "Keystats" "$latest に更新しました"

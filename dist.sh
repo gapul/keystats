@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 配布アーカイブを作る: 署名済み Keystats.app + install/uninstall + README を zip 化。
+# 配布アーカイブを作る: 署名済み Keystats.app + uninstall + README を zip 化。
 # 生成物: dist/keystats-<VERSION>-macos-<arch>.zip と その sha256。
 #   ./dist.sh            … zip を作るだけ
 #   ./dist.sh --release  … さらに GitHub Release を作成/更新して zip をアップロード
@@ -34,13 +34,13 @@ sign .build/release/keystats    net.gapul.keystats
 sign .build/release/KeystatsGUI net.gapul.keystats.gui
 
 echo "==> assemble Keystats.app"
-rm -rf "$STAGE"; mkdir -p "$STAGE/.payload"       # 本体は隠しフォルダ(誤ダブルクリック防止)
+rm -rf "$STAGE"; mkdir -p "$STAGE/.payload"
+# Homebrew Cask が参照する従来パスは維持しつつ、Finderには直接開けるアプリを見せる。
 APP="$STAGE/.payload/Keystats.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
 cp .build/release/keystats    "$APP/Contents/MacOS/keystatsd"
 cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-[ -f icon/Assets.car ]        && cp icon/Assets.car        "$APP/Contents/Resources/Assets.car"
 [ -f icon/MenuBarIcon.png ]   && cp icon/MenuBarIcon.png   "$APP/Contents/Resources/MenuBarIcon.png"
 [ -f icon/MenuBarIcon@2x.png ]&& cp icon/MenuBarIcon@2x.png "$APP/Contents/Resources/MenuBarIcon@2x.png"
 cp packaging/keystats-update "$APP/Contents/Resources/keystats-update"
@@ -52,10 +52,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Keystats</string>
   <key>CFBundleIdentifier</key><string>net.gapul.keystats.gui</string>
   <key>CFBundleExecutable</key><string>KeystatsGUI</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleIconName</key><string>AppIcon</string>
+  <!-- macOS 26のFinderでもAssets.car経由の表示が不安定なため、icnsを明示する。 -->
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -80,13 +81,14 @@ else
   echo "==> notarize: スキップ (Developer ID 署名でない or notarytool プロファイル '$NOTARY_PROFILE' 未設定)"
 fi
 
-echo "==> bundle installer (分かりやすい名前 + カスタムアイコン)"
-INST="$STAGE/Keystatsをインストール.command"
+# 実体はCask互換の場所に保ち、zip利用者には通常のアプリとして見せる。
+ln -s ".payload/Keystats.app" "$STAGE/Keystats.app"
+
+echo "==> bundle support files"
 UNINST="$STAGE/Keystatsをアンインストール.command"
-cp packaging/install.command   "$INST"
 cp packaging/uninstall.command "$UNINST"
 cp packaging/README.txt        "$STAGE/お読みください.txt"
-chmod +x "$INST" "$UNINST"
+chmod +x "$UNINST"
 
 # .command に Finder カスタムアイコンを付与(NSWorkspace setIcon)。
 seticon() {  # seticon <file> <png>
@@ -99,7 +101,6 @@ on run {f, p}
 end run
 OSA
 }
-seticon "$INST"   icon/installer-icon.png
 seticon "$UNINST" icon/uninstaller-icon.png
 
 echo "==> zip"

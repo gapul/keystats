@@ -17,15 +17,15 @@ brew install gapul/keystats/keystats
 ```
 
 インストール後、Launchpad などから **Keystats** を一度起動 → 「システム設定 > プライバシーと
-セキュリティ > 入力監視」で **Keystats** をオンにすると記録開始。メニューバーに常駐します。
+セキュリティ > 入力監視」で **Keystats** をオンにすると記録開始。初回画面が設定を案内し、
+許可を自動検知します。メニューバーに常駐します。
 
 > このMac(作者環境)では nix-darwin の `homebrew.casks` に宣言済み(`no_quarantine` 付き)。
 
 ### 配布物 (友人向け・ビルド不要)
 
-[Releases](https://github.com/gapul/keystats/releases/latest) の zip をダウンロード →
-展開して **「Keystatsをインストール」を右クリック→開く**。本体は隠しフォルダ `.payload` に
-あり、見えるのはインストーラ/アンインストーラ/README だけ(アプリ直接起動での事故防止)。
+[Releases](https://github.com/gapul/keystats/releases/latest) の zip をダウンロードして展開 →
+**Keystats** をダブルクリック。あとはアプリ内の初回画面に従うだけで、ターミナル操作は不要です。
 
 ### ソースから (開発)
 

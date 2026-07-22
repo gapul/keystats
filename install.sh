@@ -59,9 +59,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -f .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
 # 記録デーモンもバンドル内に置く(入力監視の一覧にアプリのアイコン/名前で出る)
 cp -f .build/release/keystats "$APP/Contents/MacOS/keystatsd"
-# Liquid Glass アイコン: Assets.car(本体) + AppIcon.icns(フォールバック)
+# macOS 13以降で一貫して表示できるフル解像度icns。
 cp -f icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-[ -f icon/Assets.car ] && cp -f icon/Assets.car "$APP/Contents/Resources/Assets.car"
 # メニューバー用テンプレート画像(アプリアイコン流用)
 [ -f icon/MenuBarIcon.png ]    && cp -f icon/MenuBarIcon.png    "$APP/Contents/Resources/MenuBarIcon.png"
 [ -f icon/MenuBarIcon@2x.png ] && cp -f icon/MenuBarIcon@2x.png "$APP/Contents/Resources/MenuBarIcon@2x.png"
@@ -76,10 +75,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Keystats</string>
   <key>CFBundleIdentifier</key><string>net.gapul.keystats.gui</string>
   <key>CFBundleExecutable</key><string>KeystatsGUI</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleIconName</key><string>AppIcon</string>
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
