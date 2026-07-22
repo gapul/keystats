@@ -34,9 +34,9 @@ sign .build/release/keystats    net.gapul.keystats
 sign .build/release/KeystatsGUI net.gapul.keystats.gui
 
 echo "==> assemble Keystats.app"
-rm -rf "$STAGE"; mkdir -p "$STAGE/.payload"
-# Homebrew Cask が参照する従来パスは維持しつつ、Finderには直接開けるアプリを見せる。
-APP="$STAGE/.payload/Keystats.app"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+# Finder、Homebrew Caskのどちらからも通常のアプリとして扱える配置。
+APP="$STAGE/Keystats.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/KeystatsGUI "$APP/Contents/MacOS/KeystatsGUI"
 cp .build/release/keystats    "$APP/Contents/MacOS/keystatsd"
@@ -80,9 +80,6 @@ if [ "$NOTARIZE" = 1 ] && xcrun notarytool history --keychain-profile "$NOTARY_P
 else
   echo "==> notarize: スキップ (Developer ID 署名でない or notarytool プロファイル '$NOTARY_PROFILE' 未設定)"
 fi
-
-# 実体はCask互換の場所に保ち、zip利用者には通常のアプリとして見せる。
-ln -s ".payload/Keystats.app" "$STAGE/Keystats.app"
 
 echo "==> bundle support files"
 UNINST="$STAGE/Keystatsをアンインストール.command"

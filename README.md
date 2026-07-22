@@ -25,7 +25,12 @@ brew install gapul/keystats/keystats
 ### 配布物 (友人向け・ビルド不要)
 
 [Releases](https://github.com/gapul/keystats/releases/latest) の zip をダウンロードして展開 →
-**Keystats** をダブルクリック。あとはアプリ内の初回画面に従うだけで、ターミナル操作は不要です。
+**Keystats** を「アプリケーション」へ移動してダブルクリック。あとは初回画面に従うだけで、
+ターミナル操作は不要です。
+
+初回画面では、記録内容とプライバシーを説明してから入力監視の設定を開きます。許可は自動検知され、
+「一覧に出ない」「オンにしても進まない」場合は、画面内の「権限を修復」でKeystatsの入力監視だけを
+リセットできます。統計データや他アプリの権限には触れません。
 
 ### ソースから (開発)
 
@@ -112,23 +117,24 @@ sqlite3 "$(keystats where)" "SELECT app, SUM(seconds)/60 AS min FROM apptime GRO
 
 ## 署名 / 自動更新
 
-- 全リリースを専用の **10年有効な自己署名証明書 "Keystats Signing"** で署名
-  (`codesign/setup-signing.sh` で作成)。TCC(入力監視)は署名の指定要件に紐づくので、
-  同じ証明書で署名し続ける限り**更新後も許可が維持**される。
-- 公証(notarize)はしていないため、配布物は初回だけ「右クリック→開く」で Gatekeeper を回避
-  (install.command が隔離属性を解除)。
+- リリースは **Developer ID Application** で署名し、Appleの公証(notarization)後にチケットを
+  staplerでアプリへ添付。通常のダブルクリックで起動できる。
+- TCC(入力監視)はDeveloper IDの指定要件に紐づくため、同じTeam IDで署名する更新では許可を維持する。
 - `keystats-update`(アプリ同梱)が GitHub Releases を1日1回チェックし、新しければその場で
   差し替え→アプリ再起動で自己再登録。メニュー「自動アップデート」でオフにできる。
   ダッシュボード右上のボタンからは**手動で即更新**もできる。
+- 更新前に配布ファイルのSHA-256、アプリ署名、バージョン、CPUを検証。差し替えに失敗した場合は
+  旧アプリへロールバックし、統計DBには触れない。
 
 ### 更新方法 (旧版から上げる)
 
 リモートからの強制配信はできない(更新は各自のマシンで起動する必要がある)。止まっている場合:
 
-- **Homebrew**: `brew update && brew upgrade --cask keystats`(nix-darwin なら `darwin-rebuild switch`)
-- **zip配布**: 最新 [Release](https://github.com/gapul/keystats/releases/latest) の zip を再ダウンロード →
-  「Keystatsをインストール」を**もう一度実行**(既存を bootout→上書き。壊れた updater に依存しない確実な経路)
-- 一度 0.4.0+ に上がれば、ダッシュボードの更新ボタン＋日次 updater で以後は自己修復する。
+- **Homebrew**: `brew update && brew reinstall --cask keystats`(nix-darwin なら `darwin-rebuild switch`)
+- **zip配布**: 最新 [Release](https://github.com/gapul/keystats/releases/latest) を展開し、Keystatsを
+  「アプリケーション」へ移動して既存版を置き換える。
+- どちらも統計データ(`~/.local/share/keystats`)は残る。0.10.0以降は検証・ロールバック付きの
+  アプリ内更新を利用できる。
 
 ## リリース (メンテナ向け)
 
@@ -147,4 +153,3 @@ sqlite3 "$(keystats where)" "SELECT app, SUM(seconds)/60 AS min FROM apptime GRO
 
 - 内蔵キーボード vs Keyball の厳密な分離(現状は keyboardType による概算)
 - Keyball(QMK)側のレイヤー/コンボ込みヒートマップと突き合わせ
-- 公証(Apple Developer Program)で初回の「右クリック→開く」を不要に
