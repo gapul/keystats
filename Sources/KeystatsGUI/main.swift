@@ -1341,13 +1341,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
       try? fm.removeItem(at: backup)
 
-      let config = NSWorkspace.OpenConfiguration(); config.activates = true
-      NSWorkspace.shared.openApplication(at: destination, configuration: config) { [weak self] _, error in
-        Task { @MainActor in
-          if let error { self?.alert(L10n.t("install.failed"), error.localizedDescription) }
-          else { NSApp.terminate(nil) }
-        }
-      }
+      // LaunchServicesは同じbundle idのApp Translocation版を再利用することがある。
+      // open -nで/Applications側を必ず別インスタンスとして起動し、新版の多重起動ガードに
+      // ダウンロード元プロセスを終了させる。
+      let opener = Process(); opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+      opener.arguments = ["-n", destination.path]
+      try opener.run(); opener.waitUntilExit()
+      guard opener.terminationStatus == 0 else { throw CocoaError(.fileNoSuchFile) }
+      NSApp.terminate(nil)
     } catch {
       alert(L10n.t("install.failed"), error.localizedDescription)
       setupInstallLocationWindow(); showWindow()
