@@ -684,6 +684,7 @@ struct SettingsView: View {
   @ObservedObject private var settings = AppSettings.shared
   @Environment(\.dismiss) private var dismiss
   @State private var autoUpdate = AppDelegate.shared?.autoUpdateEnabled ?? true
+  @State private var menuBarHidden = AppDelegate.shared?.menuBarHidden ?? false
 
   var body: some View {
     ScrollView {
@@ -721,6 +722,11 @@ struct SettingsView: View {
         Card(title: L10n.t("menu.autoUpdate"), icon: "arrow.triangle.2.circlepath") {
           Toggle(isOn: Binding(get: { autoUpdate }, set: { autoUpdate = $0; AppDelegate.shared?.setAutoUpdate($0) })) {
             Text(L10n.t("settings.autoUpdateHint")).font(.system(size: 12)).foregroundStyle(Theme.sub)
+          }
+        }
+        Card(title: L10n.t("settings.menuBar"), icon: "menubar.rectangle") {
+          Toggle(isOn: Binding(get: { menuBarHidden }, set: { menuBarHidden = $0; AppDelegate.shared?.setMenuBarHidden($0) })) {
+            Text(L10n.t("settings.menuBarHint")).font(.system(size: 12)).foregroundStyle(Theme.sub)
           }
         }
         Card(title: L10n.t("uninstall.title"), icon: "trash") {
@@ -1192,6 +1198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     menu.delegate = self          // 開くたびに作り直す(言語変更にラベルを追従)
     populateMenu(menu)
     statusItem.menu = menu
+    statusItem.isVisible = !menuBarHidden   // 設定で非表示にしていれば起動時から出さない
   }
 
   // メニュー項目を(再)構築。言語変更でラベルが変わるため menuNeedsUpdate から呼び直す。
@@ -1474,6 +1481,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var autoUpdateEnabled: Bool {
     get { UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true }
     set { UserDefaults.standard.set(newValue, forKey: "autoUpdate") }
+  }
+
+  // メニューバーアイコンの非表示(既定は表示)。SketchyBar 等に打鍵数を出していて
+  // 純正アイコンが不要な人向け。非表示中でも Keystats.app を再度開けば設定に戻れる。
+  var menuBarHidden: Bool {
+    get { UserDefaults.standard.bool(forKey: "menuBarHidden") }
+    set { UserDefaults.standard.set(newValue, forKey: "menuBarHidden") }
+  }
+
+  // 設定ページのトグルから呼ぶ。アイコン自体は保持したまま表示/非表示を切り替える
+  // (updateStatus が statusItem.button を触るため破棄はしない)。
+  func setMenuBarHidden(_ hidden: Bool) {
+    menuBarHidden = hidden
+    statusItem?.isVisible = !hidden
+    // 非表示にした直後はウィンドウを残す(唯一の導線になるため誤って迷子にしない)。
+    if hidden { showWindow() }
   }
 
   // MARK: LaunchAgent 自己登録(brew 等でアプリを置くだけでも動く / パスは設置先に自動追従)
