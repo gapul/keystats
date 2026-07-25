@@ -343,6 +343,12 @@ public final class Store {
     return t
   }
 
+  /// ローカル時刻の今日 0:00 以降の打鍵数。
+  public func todayTotal(at date: Date = Date(), calendar: Calendar = .current) -> Int {
+    let startHour = Int(calendar.startOfDay(for: date).timeIntervalSince1970) / 3600
+    return total(sinceHour: startHour)
+  }
+
   /// keycode -> 打鍵数
   public func perKey(sinceHour: Int = 0) -> [Int: Int] {
     var out: [Int: Int] = [:]

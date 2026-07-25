@@ -101,6 +101,8 @@ keystats top [N]    # キー別トップN
 keystats apps       # アプリ別打鍵数
 keystats combos [N] # 組み合わせキー
 keystats speed      # 入力速度(平均/ピークKPM・実打鍵時間・修正率)
+keystats today      # 今日の打鍵数だけを整数で出力(SketchyBar等の連携用)
+keystats tui        # 1秒更新の端末ダッシュボード
 keystats weak [N]   # 苦手なキー(修正の直前率トップN)
 keystats keyboards  # キーボード別打鍵数(ANSI/ISO/JIS)
 keystats key <k>    # キー詳細(アプリ別/修飾連携)。k=キーコード or ラベル(例: A)

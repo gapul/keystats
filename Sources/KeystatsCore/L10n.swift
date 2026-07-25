@@ -95,6 +95,8 @@ public enum L10n {
           keystats apps       アプリ別打鍵数
           keystats combos [N] 組み合わせキー(ショートカット)トップN
           keystats speed      入力速度(平均/ピークKPM・実打鍵時間・修正率)
+          keystats today      今日の打鍵数(整数のみ)
+          keystats tui        端末ダッシュボード
           keystats weak [N]   苦手なキー(修正の直前率トップN)
           keystats keyboards  キーボード別打鍵数(ANSI/ISO/JIS)
           keystats key <k>    キー詳細(アプリ別/修飾連携)。k=キーコード or ラベル(例: A)
@@ -111,6 +113,8 @@ public enum L10n {
           keystats apps       keystrokes by app
           keystats combos [N] top N shortcuts
           keystats speed      typing speed (avg/peak KPM, active time, correction rate)
+          keystats today      today's keystroke count (integer only)
+          keystats tui        live terminal dashboard
           keystats weak [N]   weak keys (top N by pre-correction rate)
           keystats keyboards  keystrokes by keyboard (ANSI/ISO/JIS)
           keystats key <k>    key detail (by app / with modifiers). k = keycode or label (e.g. A)

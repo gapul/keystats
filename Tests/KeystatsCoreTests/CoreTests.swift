@@ -105,4 +105,17 @@ final class CoreTests: XCTestCase {
     XCTAssertEqual(s.total(sinceHour: 150), 1)
     XCTAssertEqual(s.totalCounts(sinceHour: 150, keycode: 0), 1)
   }
+
+  func testTodayTotalUsesLocalStartOfDay() {
+    let (s, path) = makeStore()
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 9 * 3600)!
+    let now = Date(timeIntervalSince1970: 200 * 3600)
+    let startHour = Int(calendar.startOfDay(for: now).timeIntervalSince1970) / 3600
+    s.bump(hour: startHour - 1, keycode: 0, app: "yesterday")
+    s.bump(hour: startHour, keycode: 0, app: "today")
+    s.bump(hour: startHour + 1, keycode: 1, app: "today")
+    XCTAssertEqual(s.todayTotal(at: now, calendar: calendar), 2)
+  }
 }

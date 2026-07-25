@@ -253,6 +253,90 @@ func showSpeed() {
   print(L10n.t("cli.speed.correction", rate, corr, total))
 }
 
+func showToday() {
+  print(Store().todayTotal())
+}
+
+func tuiBar(_ value: Int, max: Int, width: Int = 18) -> String {
+  guard max > 0 else { return String(repeating: "░", count: width) }
+  let filled = Swift.max(1, Int((Double(value) / Double(max)) * Double(width)))
+  return String(repeating: "█", count: Swift.min(width, filled))
+    + String(repeating: "░", count: Swift.max(0, width - filled))
+}
+
+func tuiSnapshot(color: Bool) -> String {
+  let store = Store()
+  let calendar = Calendar.current
+  let now = Date()
+  let startHour = Int(calendar.startOfDay(for: now).timeIntervalSince1970) / 3600
+  let offset = TimeZone.current.secondsFromGMT(for: now) / 3600
+  let today = store.todayTotal()
+  let speed = store.typingSummary(sinceHour: startHour)
+  let todayKeys = store.perKey(sinceHour: startHour)
+  let corrections = (todayKeys[51] ?? 0) + (todayKeys[117] ?? 0)
+    + store.comboCount(["⌘Z", "⌃H"], sinceHour: startHour)
+  let correctionRate = today > 0 ? Double(corrections) / Double(today) * 100 : 0
+  let activeMinutes = speed.activeSeconds / 60
+  let hourly = store.hourly(offsetHours: offset, sinceHour: startHour)
+  let sparkChars = Array("▁▂▃▄▅▆▇█")
+  let hourlyMax = hourly.max() ?? 0
+  let spark = hourly.map { n -> Character in
+    guard hourlyMax > 0 else { return sparkChars[0] }
+    return sparkChars[Swift.min(7, Int(Double(n) / Double(hourlyMax) * 7))]
+  }
+  let keys = store.topKeys(8, sinceHour: startHour)
+  let keyMax = keys.first?.1 ?? 0
+  let keyRows = keys.map {
+    let name = String(label($0.0).prefix(9)).padding(toLength: 9, withPad: " ", startingAt: 0)
+    return "  \(name) \(tuiBar($0.1, max: keyMax))  \($0.1.formatted())"
+  }.joined(separator: "\n")
+  let apps = store.perApp(sinceHour: startHour).prefix(6)
+  let appMax = apps.first?.n ?? 0
+  let appRows = apps.map {
+    let name = String($0.app.prefix(28)).padding(toLength: 28, withPad: " ", startingAt: 0)
+    return "  \(name) \(tuiBar($0.n, max: appMax, width: 12))  \($0.n.formatted())"
+  }.joined(separator: "\n")
+  let formatter = DateFormatter()
+  formatter.dateFormat = "yyyy-MM-dd EEE  HH:mm:ss"
+  let cyan = color ? "\u{001B}[36m" : ""
+  let green = color ? "\u{001B}[32m" : ""
+  let dim = color ? "\u{001B}[2m" : ""
+  let bold = color ? "\u{001B}[1m" : ""
+  let reset = color ? "\u{001B}[0m" : ""
+
+  return """
+  \(cyan)╭────────────────────────────────────────────────────────────────────╮
+  │\(reset) \(bold)KEYSTATS\(reset)                                      \(dim)\(formatter.string(from: now))\(reset) \(cyan)│
+  ╰────────────────────────────────────────────────────────────────────╯\(reset)
+
+  \(green)\(today.formatted())\(reset) keys today     \(speed.avgKpm) avg KPM     \(speed.peakKpm) peak KPM
+  \(activeMinutes) min active       \(String(format: "%.1f", correctionRate))% corrections
+
+  \(bold)ACTIVITY BY HOUR\(reset)
+  \(dim)  00    04    08    12    16    20\(reset)
+    \(String(spark))
+
+  \(bold)TOP KEYS TODAY\(reset)
+  \(keyRows.isEmpty ? "  No data yet" : keyRows)
+
+  \(bold)TOP APPS TODAY\(reset)
+  \(appRows.isEmpty ? "  No data yet" : appRows)
+
+  \(dim)Live · refresh 1s · Control-C to quit\(reset)
+  """
+}
+
+func runTUI() {
+  let interactive = isatty(STDOUT_FILENO) != 0
+  repeat {
+    if interactive { print("\u{001B}[2J\u{001B}[H", terminator: "") }
+    print(tuiSnapshot(color: interactive))
+    fflush(stdout)
+    if !interactive { break }
+    Thread.sleep(forTimeInterval: 1)
+  } while true
+}
+
 func showWeak(limit: Int) {
   let store = Store()
   let mt = store.mistypeCounts()
@@ -366,6 +450,8 @@ case "top":    showTop(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
 case "apps":   showApps()
 case "combos": showCombos(limit: args.count > 2 ? Int(args[2]) ?? 20 : 20)
 case "speed":  showSpeed()
+case "today":  showToday()
+case "tui":    runTUI()
 case "weak":   showWeak(limit: args.count > 2 ? Int(args[2]) ?? 15 : 15)
 case "keyboards": showKeyboards()
 case "key":    if args.count > 2 { showKey(args[2]) } else { print("usage: keystats key <keycode|label>") }
