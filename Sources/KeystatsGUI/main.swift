@@ -1543,7 +1543,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         + "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
         + "<plist version=\"1.0\"><dict><key>Label</key><string>\(label)</string>\(inner)</dict></plist>\n"
-      try? s.write(to: url, atomically: true, encoding: .utf8)
+      // 内容が同じなら書かない。アトミック書き込みはファイルを置き換えるので、毎回書くと
+      // BTM が「バックグラウンド項目が追加された」と判定して起動のたびに通知を出す。
+      if (try? String(contentsOf: url, encoding: .utf8)) != s {
+        try? s.write(to: url, atomically: true, encoding: .utf8)
+      }
       return url
     }
 

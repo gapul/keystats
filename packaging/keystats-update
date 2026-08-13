@@ -24,6 +24,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     log "別のアップデート処理が実行中です (pid=$old_pid)"
     exit 0
   fi
+  rm -f "$LOCK/pid"                      # 死んだプロセスのpidが残っているとrmdirが必ず失敗する
   rmdir "$LOCK" 2>/dev/null || fail "更新ロックを解除できません"
   mkdir "$LOCK" 2>/dev/null || fail "更新ロックを取得できません"
 fi
