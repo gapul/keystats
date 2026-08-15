@@ -894,7 +894,13 @@ struct DashboardView: View {
     .background(Theme.bg)
     .frame(minWidth: 900, minHeight: 720)
     .onAppear { model.reload(); updater.check() }
-    .onReceive(timer) { _ in if live { model.reload() } }
+    // ウィンドウを閉じても isReleasedWhenClosed = false なので NSHostingView は生き続ける。
+    // 可視判定を挟まないと、閉じたダッシュボードが 1.5 秒ごとに SQLite を読み直して
+    // @Published を更新し、SwiftUI が丸ごとレイアウトし直す。--background 常駐なのに
+    // KeystatsGUI が 12.8% 使い続けていた原因がこれ(2026-08-15 に sample で確認、
+    // 実行時間の大半が LayoutEngineBox.sizeThatFits / StackLayout.placeChildren だった)。
+    // 最小化とフルカバーも isVisible が false になるので、まとめて止まる。
+    .onReceive(timer) { _ in if live, AppDelegate.shared?.window?.isVisible == true { model.reload() } }
     .alert(L10n.t("update.available"), isPresented: $showUpdateConfirm) {
       Button(L10n.t("update.now")) { updater.apply() }
       Button(L10n.t("alert.later"), role: .cancel) {}
