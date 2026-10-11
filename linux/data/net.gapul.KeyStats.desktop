@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=KeyStats
+Comment=Local keyboard statistics
+Comment[ja]=キーボードの使用統計
+Exec=keystats gui
+Icon=net.gapul.KeyStats
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupWMClass=net.gapul.KeyStats
