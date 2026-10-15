@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     os::unix::{io::AsRawFd, net::UnixStream},
     path::PathBuf,
     sync::{
@@ -42,13 +42,47 @@ fn epoch() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+// The compositor is whichever one exported its socket: niri sets NIRI_SOCKET, Hyprland sets
+// HYPRLAND_INSTANCE_SIGNATURE. niri is checked first since it is the default session.
+fn niri_socket() -> Option<PathBuf> {
+    std::env::var_os("NIRI_SOCKET").map(PathBuf::from)
+}
 fn hypr_socket() -> Result<PathBuf> {
     Ok(PathBuf::from(std::env::var("XDG_RUNTIME_DIR")?)
         .join("hypr")
         .join(std::env::var("HYPRLAND_INSTANCE_SIGNATURE")?)
         .join(".socket.sock"))
 }
+fn control_socket() -> Result<PathBuf> {
+    niri_socket().map_or_else(hypr_socket, Ok)
+}
+// niri's IPC: one JSON request per line, one JSON reply line (`{"Ok": ...}` or `{"Err": ...}`).
+fn niri_request(socket_path: &std::path::Path, request: &str) -> Result<serde_json::Value> {
+    let mut socket = UnixStream::connect(socket_path)?;
+    socket.set_read_timeout(Some(Duration::from_millis(200)))?;
+    socket.set_write_timeout(Some(Duration::from_millis(200)))?;
+    socket.write_all(format!("\"{request}\"\n").as_bytes())?;
+    // niri keeps the connection open after replying, so read the one reply line, not to EOF.
+    let mut line = String::new();
+    std::io::BufReader::new(socket.take(65536)).read_line(&mut line)?;
+    Ok(serde_json::from_str(&line)?)
+}
+fn app_name(name: Option<&str>) -> String {
+    name.filter(|s| !s.is_empty())
+        .unwrap_or("desktop")
+        .chars()
+        .take(256)
+        .collect()
+}
 fn active_app() -> Result<String> {
+    if let Some(path) = niri_socket() {
+        let reply = niri_request(&path, "FocusedWindow")?;
+        return Ok(app_name(
+            reply
+                .pointer("/Ok/FocusedWindow/app_id")
+                .and_then(|v| v.as_str()),
+        ));
+    }
     let mut socket = UnixStream::connect(hypr_socket()?)?;
     socket.set_read_timeout(Some(Duration::from_millis(200)))?;
     socket.set_write_timeout(Some(Duration::from_millis(200)))?;
@@ -56,14 +90,7 @@ fn active_app() -> Result<String> {
     let mut buf = String::new();
     socket.take(65536).read_to_string(&mut buf)?;
     let value: serde_json::Value = serde_json::from_str(&buf)?;
-    Ok(value
-        .get("class")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("desktop")
-        .chars()
-        .take(256)
-        .collect())
+    Ok(app_name(value.get("class").and_then(|v| v.as_str())))
 }
 fn lock_process_exists() -> bool {
     // Hyprlock can acquire the Wayland session lock before logind's LockedHint changes.
@@ -77,7 +104,7 @@ fn lock_process_exists() -> bool {
 }
 // Bind to the compositor's logind session, never to an arbitrary same-user TTY.
 fn compositor_session(bus: &Connection) -> Result<OwnedObjectPath> {
-    let socket = UnixStream::connect(hypr_socket()?)?;
+    let socket = UnixStream::connect(control_socket()?)?;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     anyhow::ensure!(
@@ -102,7 +129,22 @@ fn compositor_session(bus: &Connection) -> Result<OwnedObjectPath> {
         "/org/freedesktop/login1",
         "org.freedesktop.login1.Manager",
     )?;
-    Ok(manager.call("GetSessionByPID", &(cred.pid as u32,))?)
+    if let Ok(path) = manager.call("GetSessionByPID", &(cred.pid as u32,)) {
+        return Ok(path);
+    }
+    // niri runs as a systemd user service (niri-session starts niri.service), so its process
+    // sits under user@UID.service rather than in the login session's scope, and logind has no
+    // session for it. Fall back to the session logind records as this user's graphical one.
+    let user: OwnedObjectPath = manager.call("GetUser", &(cred.uid,))?;
+    let user = Proxy::new(
+        bus,
+        "org.freedesktop.login1",
+        user,
+        "org.freedesktop.login1.User",
+    )?;
+    let (_, display): (String, OwnedObjectPath) = user.get_property("Display")?;
+    anyhow::ensure!(display.as_str() != "/", "no graphical session for this user");
+    Ok(display)
 }
 fn session_allowed(bus: &Connection, path: &OwnedObjectPath) -> Result<bool> {
     let session = Proxy::new(
@@ -118,37 +160,60 @@ fn session_allowed(bus: &Connection, path: &OwnedObjectPath) -> Result<bool> {
 struct FocusEvents {
     socket: UnixStream,
     tail: Vec<u8>,
+    niri: bool,
 }
 impl FocusEvents {
     fn connect() -> Result<Self> {
-        let socket = UnixStream::connect(hypr_socket()?.with_file_name(".socket2.sock"))?;
+        let (socket, niri) = match niri_socket() {
+            Some(path) => {
+                let mut socket = UnixStream::connect(path)?;
+                socket.write_all(b"\"EventStream\"\n")?;
+                (socket, true)
+            }
+            None => (
+                UnixStream::connect(hypr_socket()?.with_file_name(".socket2.sock"))?,
+                false,
+            ),
+        };
         socket.set_nonblocking(true)?;
         Ok(Self {
             socket,
             tail: vec![],
+            niri,
         })
+    }
+    // niri sends one JSON object per line, keyed by the event name; Hyprland sends `name>>data`.
+    fn is_focus_event(&self, line: &[u8]) -> bool {
+        let prefixes: &[&[u8]] = if self.niri {
+            &[
+                b"{\"WindowFocusChanged\"",
+                b"{\"WorkspaceActivated\"",
+                b"{\"OverviewOpenedOrClosed\"",
+                b"{\"ConfigLoaded\"",
+            ]
+        } else {
+            &[
+                b"activewindowv2>>",
+                b"focusedmon>>",
+                b"openlayer>>",
+                b"closelayer>>",
+                b"configreloaded>>",
+            ]
+        };
+        prefixes.iter().any(|prefix| line.starts_with(prefix))
     }
     fn changed(&mut self) -> Result<bool> {
         let mut changed = false;
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
-                Ok(0) => anyhow::bail!("Hyprland event stream closed"),
+                Ok(0) => anyhow::bail!("compositor event stream closed"),
                 Ok(n) => {
                     self.tail.extend_from_slice(&buf[..n]);
-                    anyhow::ensure!(self.tail.len() < 262144, "Hyprland event overflow");
+                    // niri's WindowsChanged lists every window with its title, so it gets room.
+                    anyhow::ensure!(self.tail.len() < 4 << 20, "compositor event overflow");
                     while let Some(end) = self.tail.iter().position(|b| *b == b'\n') {
-                        let line = &self.tail[..end];
-                        if [
-                            b"activewindowv2>>".as_slice(),
-                            b"focusedmon>>",
-                            b"openlayer>>",
-                            b"closelayer>>",
-                            b"configreloaded>>",
-                        ]
-                        .iter()
-                        .any(|prefix| line.starts_with(prefix))
-                        {
+                        if self.is_focus_event(&self.tail[..end]) {
                             changed = true;
                         }
                         self.tail.drain(..=end);
@@ -352,7 +417,7 @@ pub fn run(path: &std::path::Path) -> Result<()> {
             } else if !session_ok {
                 "Locked or inactive session"
             } else if app.is_err() {
-                "Hyprland unavailable"
+                "Compositor unavailable"
             } else {
                 ""
             }
