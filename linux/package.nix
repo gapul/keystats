@@ -16,7 +16,7 @@ rustPlatform.buildRustPackage {
     install -Dm644 data/net.gapul.KeyStats.svg $out/share/icons/hicolor/scalable/apps/net.gapul.KeyStats.svg
   '';
   meta = {
-    description = "Native GTK4 keyboard analytics for Linux/Hyprland";
+    description = "Native GTK4 keyboard analytics for Linux (niri, Hyprland)";
     homepage = "https://github.com/gapul/keystats";
     platforms = lib.platforms.linux;
     mainProgram = "keystats";
