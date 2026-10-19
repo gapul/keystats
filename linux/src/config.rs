@@ -89,14 +89,32 @@ impl Config {
         Ok(())
     }
     pub fn save(&self) -> Result<()> {
+        self.save_to(&config_path())
+    }
+    pub fn save_to(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        atomic_json(&config_path(), self)
+        anyhow::ensure!(
+            !is_managed(path),
+            "{} is managed outside KeyStats (e.g. by home-manager); change it there",
+            path.display()
+        );
+        atomic_json(path, self)
     }
     pub fn excludes(&self, app: &str) -> bool {
         self.excluded_apps
             .iter()
             .any(|a| a.eq_ignore_ascii_case(app))
     }
+}
+/// linux.json belongs to someone else when it is a symlink (home-manager links it into the Nix
+/// store) or read-only: save()'s rename would replace the link with a plain file.
+pub fn config_managed() -> bool {
+    is_managed(&config_path())
+}
+pub fn is_managed(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink() || m.permissions().readonly())
+        .unwrap_or(false)
 }
 pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().context("missing parent")?;

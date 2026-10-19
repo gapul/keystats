@@ -1,5 +1,5 @@
 use keystats_linux::{
-    config::Config,
+    config::{is_managed, Config},
     engine::Engine,
     keys,
     store::{import_macos, Filter, Store},
@@ -154,6 +154,30 @@ fn exclusions_case_insensitive_and_invalid_config_rejected() {
     assert!(!c.excludes("firefox"));
     c.input_mode = "guess".into();
     assert!(c.validate().is_err());
+}
+#[test]
+fn managed_config_is_never_replaced() {
+    let d = tempfile::tempdir().unwrap();
+    let c = Config::default();
+    let plain = d.path().join("plain.json");
+    c.save_to(&plain).unwrap();
+    assert!(!is_managed(&plain));
+    // home-manager's layout: linux.json is a symlink to a read-only store file.
+    let target = d.path().join("store.json");
+    std::fs::write(&target, b"{}").unwrap();
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&target, perms).unwrap();
+    let link = d.path().join("linux.json");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(is_managed(&link));
+    assert!(c.save_to(&link).is_err());
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(is_managed(&target));
+    assert!(c.save_to(&target).is_err());
 }
 #[test]
 fn mac_import_maps_codes_and_is_idempotent() {

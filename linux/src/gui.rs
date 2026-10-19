@@ -424,6 +424,24 @@ fn settings(parent: &gtk::ApplicationWindow, ui: Ui) {
     body.append(&privacy);
     let save = gtk::Button::with_label(&text(ui.ja, "保存", "Save"));
     save.add_css_class("suggested-action");
+    // Shown, not editable: saving would replace the managed file (see config::is_managed).
+    if config::config_managed() {
+        let note = label(
+            &text(
+                ui.ja,
+                "linux.json は外部（home-manager など）で管理されています。変更はそちらで行ってください。",
+                "linux.json is managed outside KeyStats (e.g. by home-manager). Change it there.",
+            ),
+            "dim-label",
+        );
+        note.set_wrap(true);
+        body.append(&note);
+        lang.set_sensitive(false);
+        layout.set_sensitive(false);
+        mode.set_sensitive(false);
+        exclude.set_editable(false);
+        save.set_sensitive(false);
+    }
     let parent = parent.clone();
     let weak = w.downgrade();
     save.connect_clicked(move |_| {

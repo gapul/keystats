@@ -34,6 +34,9 @@ On this laptop these ACLs are already provided for xremap.
   `status`, `where`, `pause`, `resume`, `prune DAYS`, `import-macos PATH`.
   Filters: `--period today|week|all`, `--app ID`, `--key EVDEV_CODE`, `--device ID`.
 - Configuration: `~/.config/keystats/linux.json`; changes are reloaded automatically.
+  When it is a symlink or read-only (e.g. written by home-manager), the GUI shows the
+  settings but does not save them. `hm-module.nix` provides `services.keystats`
+  (the collector's user service, plus `settings` for linux.json).
 - Auto input source selects xremap's output if present, otherwise physical
   keyboards. xremap grabs physical input, so its output is required on this
   laptop. This counts remapped presses under one combined keyboard, not a
